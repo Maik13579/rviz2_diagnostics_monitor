@@ -191,6 +191,10 @@ QLineEdit *DiagnosticsMonitorPanel::overviewSearchForTest() const {
   return overview_search_;
 }
 
+QTableWidget *DiagnosticsMonitorPanel::detailValuesForTest() const {
+  return detail_values_;
+}
+
 void DiagnosticsMonitorPanel::buildUi() {
   setMinimumWidth(260);
   setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
@@ -277,8 +281,17 @@ void DiagnosticsMonitorPanel::buildUi() {
                      if (items.empty()) {
                        return;
                      }
-                     selected_id_ = str(items.front()->data(0, Qt::UserRole).toString());
-                     showDetails(selected_id_);
+                     const auto id =
+                         str(items.front()->data(0, Qt::UserRole).toString());
+                     if (!id.empty()) {
+                       selected_id_ = id;
+                       selected_group_path_.clear();
+                       showDetails(selected_id_);
+                       return;
+                     }
+                     selected_id_.clear();
+                     selected_group_path_ = itemPath(items.front());
+                     showGroupDetails(selected_group_path_);
                    });
 
   auto *events = new QWidget(tabs_);
@@ -431,6 +444,8 @@ void DiagnosticsMonitorPanel::refreshUi() {
   refreshEvents();
   if (!selected_id_.empty()) {
     showDetails(selected_id_);
+  } else if (!selected_group_path_.isEmpty()) {
+    showGroupDetails(selected_group_path_);
   }
 }
 
@@ -551,6 +566,8 @@ void DiagnosticsMonitorPanel::showDetails(const std::string &id) {
           .arg(qstr(snapshot->message))
           .arg(qstr(snapshot->hardware_id.empty() ? "-" : snapshot->hardware_id))
           .arg(ageText(snapshot->last_seen, now)));
+  detail_values_->setColumnCount(2);
+  detail_values_->setHorizontalHeaderLabels({"Key", "Value"});
   detail_values_->setRowCount(static_cast<int>(snapshot->values.size()));
   for (int row = 0; row < static_cast<int>(snapshot->values.size()); ++row) {
     detail_values_->setItem(row, 0,
@@ -559,6 +576,48 @@ void DiagnosticsMonitorPanel::showDetails(const std::string &id) {
                             new QTableWidgetItem(qstr(snapshot->values[row].value)));
   }
   selected_timeline_->setSamples(std::move(history));
+}
+
+void DiagnosticsMonitorPanel::showGroupDetails(const QString &path) {
+  const auto snapshots = snapshotsForGroupPath(path);
+  if (snapshots.empty()) {
+    detail_label_->setText("Select a diagnostic for details");
+    detail_values_->setRowCount(0);
+    selected_timeline_->setSamples({});
+    return;
+  }
+
+  Severity severity = Severity::Ok;
+  for (const auto &snapshot : snapshots) {
+    severity = DiagnosticModel::worst(severity, snapshot.level);
+  }
+
+  detail_label_->setText(
+      QString("%1\n%2 diagnostics   Worst level: %3")
+          .arg(path)
+          .arg(static_cast<int>(snapshots.size()))
+          .arg(qstr(DiagnosticModel::severityLabel(severity))));
+  detail_values_->setColumnCount(4);
+  detail_values_->setHorizontalHeaderLabels(
+      {"Level", "Name", "Message", "Hardware ID"});
+  detail_values_->setRowCount(static_cast<int>(snapshots.size()));
+  for (int row = 0; row < static_cast<int>(snapshots.size()); ++row) {
+    const auto &snapshot = snapshots[row];
+    const QStringList columns = {
+        qstr(DiagnosticModel::severityLabel(snapshot.level)),
+        qstr(snapshot.name),
+        qstr(snapshot.message),
+        qstr(snapshot.hardware_id),
+    };
+    for (int col = 0; col < columns.size(); ++col) {
+      auto *item = new QTableWidgetItem(columns[col]);
+      item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+      detail_values_->setItem(row, col, item);
+    }
+    setRowSeverity(detail_values_, row, snapshot.level);
+  }
+  detail_values_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+  selected_timeline_->setSamples({});
 }
 
 void DiagnosticsMonitorPanel::addSection(
@@ -682,6 +741,37 @@ QString DiagnosticsMonitorPanel::itemPath(const QTreeWidgetItem *item) const {
     current = current->parent();
   }
   return parts.join("/");
+}
+
+std::vector<DiagnosticSnapshot>
+DiagnosticsMonitorPanel::snapshotsForGroupPath(const QString &path) {
+  std::vector<DiagnosticSnapshot> snapshots;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    snapshots = model_.snapshots(std::chrono::steady_clock::now());
+  }
+
+  QString prefix = path;
+  if (prefix.startsWith("All Devices/")) {
+    prefix.remove(0, QString("All Devices/").size());
+  } else if (prefix == "All Devices") {
+    prefix.clear();
+  }
+
+  std::vector<DiagnosticSnapshot> result;
+  for (const auto &snapshot : snapshots) {
+    const auto name = qstr(snapshot.name);
+    if (prefix.isEmpty() || name == prefix || name.startsWith(prefix + "/")) {
+      result.push_back(snapshot);
+    }
+  }
+  std::sort(result.begin(), result.end(), [](const auto &left, const auto &right) {
+    if (left.level != right.level) {
+      return static_cast<int>(left.level) > static_cast<int>(right.level);
+    }
+    return left.name < right.name;
+  });
+  return result;
 }
 
 QColor DiagnosticsMonitorPanel::colorFor(Severity severity) {

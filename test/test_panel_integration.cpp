@@ -7,6 +7,7 @@
 #include <QApplication>
 #include <QLineEdit>
 #include <QScrollBar>
+#include <QTableWidget>
 #include <QTreeWidget>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <gtest/gtest.h>
@@ -210,6 +211,50 @@ TEST(PanelIntegration, RefreshKeepsTreeScrollPosition) {
   panel.refreshForTest();
 
   EXPECT_EQ(tree->verticalScrollBar()->value(), expected_scroll);
+}
+
+TEST(PanelIntegration, SelectingGroupShowsMemberDiagnostics) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  diagnostic_msgs::msg::DiagnosticArray message;
+  auto front_lidar =
+      makeMessage(diagnostic_msgs::msg::DiagnosticStatus::OK, "Nominal")
+          .status.front();
+  diagnostic_msgs::msg::DiagnosticStatus rear_lidar;
+  rear_lidar.name = "Sensors/Lidar/Rear";
+  rear_lidar.hardware_id = "lidar_rear";
+  rear_lidar.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+  rear_lidar.message = "Scan jitter";
+  diagnostic_msgs::msg::DiagnosticStatus battery;
+  battery.name = "Power/Battery";
+  battery.hardware_id = "battery";
+  battery.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+  battery.message = "Nominal";
+  message.status = {front_lidar, rear_lidar, battery};
+
+  panel.ingestForTest(message);
+  panel.refreshForTest();
+
+  auto *tree = panel.overviewTreeForTest();
+  ASSERT_NE(tree, nullptr);
+  const auto lidar_items =
+      tree->findItems("Lidar", Qt::MatchExactly | Qt::MatchRecursive, 0);
+  ASSERT_FALSE(lidar_items.empty());
+  tree->setCurrentItem(lidar_items.front());
+  QApplication::processEvents();
+
+  auto *details = panel.detailValuesForTest();
+  ASSERT_NE(details, nullptr);
+  EXPECT_EQ(details->rowCount(), 2);
+
+  QStringList names;
+  for (int row = 0; row < details->rowCount(); ++row) {
+    ASSERT_NE(details->item(row, 1), nullptr);
+    names.push_back(details->item(row, 1)->text());
+  }
+  EXPECT_TRUE(names.contains("Sensors/Lidar/Front"));
+  EXPECT_TRUE(names.contains("Sensors/Lidar/Rear"));
+  EXPECT_FALSE(names.contains("Power/Battery"));
 }
 
 int main(int argc, char **argv) {
