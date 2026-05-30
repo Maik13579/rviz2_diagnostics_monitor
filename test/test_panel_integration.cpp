@@ -5,6 +5,7 @@
 #include <cstdlib>
 
 #include <QApplication>
+#include <QLineEdit>
 #include <QTreeWidget>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <gtest/gtest.h>
@@ -126,6 +127,57 @@ TEST(PanelIntegration, RefreshKeepsCollapsedTreeItemsCollapsed) {
   }
   ASSERT_NE(refreshed_all_devices, nullptr);
   EXPECT_FALSE(refreshed_all_devices->isExpanded());
+}
+
+TEST(PanelIntegration, OverviewFilterAppliesToAllDevicesTree) {
+  auto panel_node =
+      std::make_shared<rclcpp::Node>("diagnostics_monitor_filter_panel_test");
+  auto publisher_node =
+      std::make_shared<rclcpp::Node>("diagnostics_monitor_filter_publisher_test");
+  auto publisher =
+      publisher_node->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
+          "/diagnostics_monitor_filter_test", 10);
+
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+  panel.setTopicForTest("/diagnostics_monitor_filter_test");
+  panel.initializeForTest(panel_node);
+
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(panel_node);
+  executor.add_node(publisher_node);
+
+  diagnostic_msgs::msg::DiagnosticArray message;
+  auto lidar = makeMessage(diagnostic_msgs::msg::DiagnosticStatus::OK, "Nominal")
+                   .status.front();
+  diagnostic_msgs::msg::DiagnosticStatus battery;
+  battery.name = "Power/Battery";
+  battery.hardware_id = "battery_pack";
+  battery.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+  battery.message = "Battery low";
+  message.status = {lidar, battery};
+  publisher->publish(message);
+
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    executor.spin_some(20ms);
+    QApplication::processEvents();
+    if (panel.currentCountsForTest().total() == 2) {
+      break;
+    }
+  }
+  ASSERT_EQ(panel.currentCountsForTest().total(), 2);
+
+  panel.overviewSearchForTest()->setText("battery");
+  panel.refreshForTest();
+
+  auto *tree = panel.overviewTreeForTest();
+  ASSERT_NE(tree, nullptr);
+  const auto battery_items =
+      tree->findItems("Battery", Qt::MatchExactly | Qt::MatchRecursive, 0);
+  const auto lidar_items =
+      tree->findItems("Lidar", Qt::MatchExactly | Qt::MatchRecursive, 0);
+  EXPECT_FALSE(battery_items.empty());
+  EXPECT_TRUE(lidar_items.empty());
 }
 
 int main(int argc, char **argv) {

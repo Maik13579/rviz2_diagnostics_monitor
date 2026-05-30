@@ -180,6 +180,10 @@ QTreeWidget *DiagnosticsMonitorPanel::overviewTreeForTest() const {
   return overview_tree_;
 }
 
+QLineEdit *DiagnosticsMonitorPanel::overviewSearchForTest() const {
+  return overview_search_;
+}
+
 void DiagnosticsMonitorPanel::buildUi() {
   setMinimumWidth(260);
   setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
@@ -439,11 +443,7 @@ void DiagnosticsMonitorPanel::refreshOverview(
   addSection(nullptr, "Warned Devices", filtered, Severity::Warn);
   addSection(nullptr, "Stale Devices", filtered, Severity::Stale);
 
-  TreeNode tree;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    tree = model_.tree(std::chrono::steady_clock::now());
-  }
+  const auto tree = treeForSnapshots(filtered);
   auto *all = new QTreeWidgetItem(overview_tree_, {"All Devices"});
   setItemSeverity(all, tree.severity);
   for (const auto &[_, child] : tree.children) {
@@ -602,6 +602,29 @@ void DiagnosticsMonitorPanel::rebuildSubscriptionIfReady() {
     return;
   }
   subscribe();
+}
+
+TreeNode DiagnosticsMonitorPanel::treeForSnapshots(
+    const std::vector<DiagnosticSnapshot> &snapshots) const {
+  TreeNode root;
+  root.label = "All Devices";
+  root.severity = Severity::Ok;
+
+  for (const auto &snapshot : snapshots) {
+    auto *node = &root;
+    node->severity = DiagnosticModel::worst(node->severity, snapshot.level);
+    for (const auto &part : DiagnosticModel::splitDiagnosticName(snapshot.name)) {
+      auto [child, _] = node->children.emplace(part, TreeNode{});
+      child->second.label = part;
+      child->second.severity =
+          DiagnosticModel::worst(child->second.severity, snapshot.level);
+      node = &child->second;
+    }
+    node->diagnostic_id = snapshot.id;
+    node->severity = DiagnosticModel::worst(node->severity, snapshot.level);
+  }
+
+  return root;
 }
 
 std::set<QString> DiagnosticsMonitorPanel::expandedItemPaths() const {

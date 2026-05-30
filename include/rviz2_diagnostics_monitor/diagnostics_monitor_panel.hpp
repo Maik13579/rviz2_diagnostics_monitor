@@ -54,6 +54,7 @@ public:
   std::vector<DiagnosticSnapshot> snapshotsForTest();
   void refreshForTest();
   QTreeWidget *overviewTreeForTest() const;
+  QLineEdit *overviewSearchForTest() const;
 
   static QColor colorFor(Severity severity);
 
@@ -72,6 +73,7 @@ private:
   void setItemSeverity(QTreeWidgetItem *item, Severity severity);
   void setRowSeverity(QTableWidget *table, int row, Severity severity);
   void rebuildSubscriptionIfReady();
+  TreeNode treeForSnapshots(const std::vector<DiagnosticSnapshot> &snapshots) const;
   std::set<QString> expandedItemPaths() const;
   void restoreExpandedItemPaths(const std::set<QString> &expanded_paths);
   QString itemPath(const QTreeWidgetItem *item) const;
