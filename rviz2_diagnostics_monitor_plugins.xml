@@ -1,0 +1,9 @@
+<library path="rviz2_diagnostics_monitor">
+  <class
+    name="rviz2_diagnostics_monitor/DiagnosticsMonitorPanel"
+    type="rviz2_diagnostics_monitor::DiagnosticsMonitorPanel"
+    base_class_type="rviz_common::Panel">
+    <icon type="file">icons/diagnostics_monitor.svg</icon>
+    <description>RViz 2 diagnostics monitor panel.</description>
+  </class>
+</library>
