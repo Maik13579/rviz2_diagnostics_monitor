@@ -5,6 +5,7 @@
 #include <cstdlib>
 
 #include <QApplication>
+#include <QTreeWidget>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <gtest/gtest.h>
 #include <rclcpp/rclcpp.hpp>
@@ -94,6 +95,37 @@ TEST(PanelIntegration, ReceivesDiagnosticsAndTracksStateChanges) {
     }
   }
   EXPECT_EQ(panel.currentCountsForTest().stale, 1);
+}
+
+TEST(PanelIntegration, RefreshKeepsCollapsedTreeItemsCollapsed) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  auto *tree = panel.overviewTreeForTest();
+  ASSERT_NE(tree, nullptr);
+  panel.refreshForTest();
+
+  QTreeWidgetItem *all_devices = nullptr;
+  for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+    if (tree->topLevelItem(i)->text(0) == "All Devices") {
+      all_devices = tree->topLevelItem(i);
+      break;
+    }
+  }
+  ASSERT_NE(all_devices, nullptr);
+  ASSERT_TRUE(all_devices->isExpanded());
+
+  all_devices->setExpanded(false);
+  panel.refreshForTest();
+
+  QTreeWidgetItem *refreshed_all_devices = nullptr;
+  for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+    if (tree->topLevelItem(i)->text(0) == "All Devices") {
+      refreshed_all_devices = tree->topLevelItem(i);
+      break;
+    }
+  }
+  ASSERT_NE(refreshed_all_devices, nullptr);
+  EXPECT_FALSE(refreshed_all_devices->isExpanded());
 }
 
 int main(int argc, char **argv) {

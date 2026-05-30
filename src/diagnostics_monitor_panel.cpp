@@ -21,6 +21,7 @@
 #include <QPushButton>
 #include <QSizePolicy>
 #include <QSpinBox>
+#include <QStringList>
 #include <QSplitter>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -171,6 +172,12 @@ std::vector<DiagnosticEvent> DiagnosticsMonitorPanel::eventsForTest() const {
 std::vector<DiagnosticSnapshot> DiagnosticsMonitorPanel::snapshotsForTest() {
   std::lock_guard<std::mutex> lock(mutex_);
   return model_.snapshots(std::chrono::steady_clock::now());
+}
+
+void DiagnosticsMonitorPanel::refreshForTest() { refreshUi(); }
+
+QTreeWidget *DiagnosticsMonitorPanel::overviewTreeForTest() const {
+  return overview_tree_;
 }
 
 void DiagnosticsMonitorPanel::buildUi() {
@@ -419,6 +426,8 @@ void DiagnosticsMonitorPanel::refreshUi() {
 void DiagnosticsMonitorPanel::refreshOverview(
     const std::vector<DiagnosticSnapshot> &snapshots) {
   const auto search = str(overview_search_->text());
+  const auto expanded_paths = expandedItemPaths();
+  const auto selected_id = selected_id_;
   std::vector<DiagnosticSnapshot> filtered;
   std::copy_if(snapshots.begin(), snapshots.end(), std::back_inserter(filtered),
                [&search](const auto &snapshot) {
@@ -440,7 +449,27 @@ void DiagnosticsMonitorPanel::refreshOverview(
   for (const auto &[_, child] : tree.children) {
     addTreeNode(all, child);
   }
-  overview_tree_->expandToDepth(1);
+  restoreExpandedItemPaths(expanded_paths);
+  if (expanded_paths.empty()) {
+    overview_tree_->expandToDepth(1);
+  }
+
+  if (!selected_id.empty()) {
+    for (int i = 0; i < overview_tree_->topLevelItemCount(); ++i) {
+      QList<QTreeWidgetItem *> stack;
+      stack.push_back(overview_tree_->topLevelItem(i));
+      while (!stack.empty()) {
+        auto *item = stack.takeLast();
+        if (str(item->data(0, Qt::UserRole).toString()) == selected_id) {
+          overview_tree_->setCurrentItem(item);
+          return;
+        }
+        for (int child = 0; child < item->childCount(); ++child) {
+          stack.push_back(item->child(child));
+        }
+      }
+    }
+  }
 }
 
 void DiagnosticsMonitorPanel::refreshEvents() {
@@ -573,6 +602,51 @@ void DiagnosticsMonitorPanel::rebuildSubscriptionIfReady() {
     return;
   }
   subscribe();
+}
+
+std::set<QString> DiagnosticsMonitorPanel::expandedItemPaths() const {
+  std::set<QString> paths;
+  for (int i = 0; i < overview_tree_->topLevelItemCount(); ++i) {
+    const auto *root = overview_tree_->topLevelItem(i);
+    QList<const QTreeWidgetItem *> stack;
+    stack.push_back(root);
+    while (!stack.empty()) {
+      const auto *item = stack.takeLast();
+      if (item->isExpanded()) {
+        paths.insert(itemPath(item));
+      }
+      for (int child = 0; child < item->childCount(); ++child) {
+        stack.push_back(item->child(child));
+      }
+    }
+  }
+  return paths;
+}
+
+void DiagnosticsMonitorPanel::restoreExpandedItemPaths(
+    const std::set<QString> &expanded_paths) {
+  for (int i = 0; i < overview_tree_->topLevelItemCount(); ++i) {
+    auto *root = overview_tree_->topLevelItem(i);
+    QList<QTreeWidgetItem *> stack;
+    stack.push_back(root);
+    while (!stack.empty()) {
+      auto *item = stack.takeLast();
+      item->setExpanded(expanded_paths.count(itemPath(item)) > 0);
+      for (int child = 0; child < item->childCount(); ++child) {
+        stack.push_back(item->child(child));
+      }
+    }
+  }
+}
+
+QString DiagnosticsMonitorPanel::itemPath(const QTreeWidgetItem *item) const {
+  QStringList parts;
+  const auto *current = item;
+  while (current != nullptr) {
+    parts.prepend(current->text(0));
+    current = current->parent();
+  }
+  return parts.join("/");
 }
 
 QColor DiagnosticsMonitorPanel::colorFor(Severity severity) {

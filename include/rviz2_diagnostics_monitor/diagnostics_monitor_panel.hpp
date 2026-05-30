@@ -4,6 +4,7 @@
 #pragma once
 
 #include <mutex>
+#include <set>
 #include <string>
 
 #include <QWidget>
@@ -51,6 +52,8 @@ public:
   SummaryCounts currentCountsForTest();
   std::vector<DiagnosticEvent> eventsForTest() const;
   std::vector<DiagnosticSnapshot> snapshotsForTest();
+  void refreshForTest();
+  QTreeWidget *overviewTreeForTest() const;
 
   static QColor colorFor(Severity severity);
 
@@ -69,6 +72,9 @@ private:
   void setItemSeverity(QTreeWidgetItem *item, Severity severity);
   void setRowSeverity(QTableWidget *table, int row, Severity severity);
   void rebuildSubscriptionIfReady();
+  std::set<QString> expandedItemPaths() const;
+  void restoreExpandedItemPaths(const std::set<QString> &expanded_paths);
+  QString itemPath(const QTreeWidgetItem *item) const;
 
   static QString ageText(std::chrono::steady_clock::time_point last_seen,
                          std::chrono::steady_clock::time_point now);
