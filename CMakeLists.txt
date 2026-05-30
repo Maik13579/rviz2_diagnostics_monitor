@@ -65,6 +65,11 @@ install(
 )
 
 install(
+  DIRECTORY doc
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(
   PROGRAMS
     scripts/publish_test_diagnostics.py
   DESTINATION lib/${PROJECT_NAME}
