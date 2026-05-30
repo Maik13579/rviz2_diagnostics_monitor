@@ -6,6 +6,7 @@
 
 #include <QApplication>
 #include <QLineEdit>
+#include <QScrollBar>
 #include <QTreeWidget>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <gtest/gtest.h>
@@ -178,6 +179,37 @@ TEST(PanelIntegration, OverviewFilterAppliesToAllDevicesTree) {
       tree->findItems("Lidar", Qt::MatchExactly | Qt::MatchRecursive, 0);
   EXPECT_FALSE(battery_items.empty());
   EXPECT_TRUE(lidar_items.empty());
+}
+
+TEST(PanelIntegration, RefreshKeepsTreeScrollPosition) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  diagnostic_msgs::msg::DiagnosticArray message;
+  for (int i = 0; i < 80; ++i) {
+    diagnostic_msgs::msg::DiagnosticStatus status;
+    status.name = "Synthetic/Device " + std::to_string(i);
+    status.hardware_id = "synthetic_" + std::to_string(i);
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+    status.message = "Nominal";
+    message.status.push_back(status);
+  }
+  panel.ingestForTest(message);
+  panel.refreshForTest();
+
+  auto *tree = panel.overviewTreeForTest();
+  ASSERT_NE(tree, nullptr);
+  tree->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+  tree->expandAll();
+  QApplication::processEvents();
+
+  const auto max_scroll = tree->verticalScrollBar()->maximum();
+  ASSERT_GT(max_scroll, 0);
+  const auto expected_scroll = std::max(1, max_scroll / 2);
+  tree->verticalScrollBar()->setValue(expected_scroll);
+
+  panel.refreshForTest();
+
+  EXPECT_EQ(tree->verticalScrollBar()->value(), expected_scroll);
 }
 
 int main(int argc, char **argv) {

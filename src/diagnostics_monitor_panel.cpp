@@ -19,6 +19,7 @@
 #include <QMetaObject>
 #include <QPainter>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QStringList>
@@ -172,6 +173,12 @@ std::vector<DiagnosticEvent> DiagnosticsMonitorPanel::eventsForTest() const {
 std::vector<DiagnosticSnapshot> DiagnosticsMonitorPanel::snapshotsForTest() {
   std::lock_guard<std::mutex> lock(mutex_);
   return model_.snapshots(std::chrono::steady_clock::now());
+}
+
+void DiagnosticsMonitorPanel::ingestForTest(
+    const diagnostic_msgs::msg::DiagnosticArray &message) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  model_.ingest(message, std::chrono::steady_clock::now());
 }
 
 void DiagnosticsMonitorPanel::refreshForTest() { refreshUi(); }
@@ -432,6 +439,7 @@ void DiagnosticsMonitorPanel::refreshOverview(
   const auto search = str(overview_search_->text());
   const auto expanded_paths = expandedItemPaths();
   const auto selected_id = selected_id_;
+  const auto scroll_position = overview_tree_->verticalScrollBar()->value();
   std::vector<DiagnosticSnapshot> filtered;
   std::copy_if(snapshots.begin(), snapshots.end(), std::back_inserter(filtered),
                [&search](const auto &snapshot) {
@@ -461,7 +469,10 @@ void DiagnosticsMonitorPanel::refreshOverview(
       while (!stack.empty()) {
         auto *item = stack.takeLast();
         if (str(item->data(0, Qt::UserRole).toString()) == selected_id) {
-          overview_tree_->setCurrentItem(item);
+          item->setSelected(true);
+          overview_tree_->setCurrentItem(item,
+                                         0, QItemSelectionModel::NoUpdate);
+          overview_tree_->verticalScrollBar()->setValue(scroll_position);
           return;
         }
         for (int child = 0; child < item->childCount(); ++child) {
@@ -470,6 +481,7 @@ void DiagnosticsMonitorPanel::refreshOverview(
       }
     }
   }
+  overview_tree_->verticalScrollBar()->setValue(scroll_position);
 }
 
 void DiagnosticsMonitorPanel::refreshEvents() {

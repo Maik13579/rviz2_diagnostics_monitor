@@ -52,6 +52,7 @@ public:
   SummaryCounts currentCountsForTest();
   std::vector<DiagnosticEvent> eventsForTest() const;
   std::vector<DiagnosticSnapshot> snapshotsForTest();
+  void ingestForTest(const diagnostic_msgs::msg::DiagnosticArray &message);
   void refreshForTest();
   QTreeWidget *overviewTreeForTest() const;
   QLineEdit *overviewSearchForTest() const;
