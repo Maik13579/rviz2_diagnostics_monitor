@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <map>
 #include <sstream>
 
 #include <QApplication>
@@ -193,6 +194,11 @@ QLineEdit *DiagnosticsMonitorPanel::overviewSearchForTest() const {
 
 QTableWidget *DiagnosticsMonitorPanel::detailValuesForTest() const {
   return detail_values_;
+}
+
+std::vector<HistorySample>
+DiagnosticsMonitorPanel::groupHistoryForTest(const QString &path) {
+  return historyForGroupPath(path);
 }
 
 void DiagnosticsMonitorPanel::buildUi() {
@@ -617,7 +623,7 @@ void DiagnosticsMonitorPanel::showGroupDetails(const QString &path) {
     setRowSeverity(detail_values_, row, snapshot.level);
   }
   detail_values_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-  selected_timeline_->setSamples({});
+  selected_timeline_->setSamples(historyForGroupPath(path));
 }
 
 void DiagnosticsMonitorPanel::addSection(
@@ -772,6 +778,56 @@ DiagnosticsMonitorPanel::snapshotsForGroupPath(const QString &path) {
     return left.name < right.name;
   });
   return result;
+}
+
+std::vector<HistorySample>
+DiagnosticsMonitorPanel::historyForGroupPath(const QString &path) {
+  const auto snapshots = snapshotsForGroupPath(path);
+  if (snapshots.empty()) {
+    return {};
+  }
+
+  struct MemberSample {
+    std::string id;
+    HistorySample sample;
+  };
+
+  std::vector<MemberSample> samples;
+  for (const auto &snapshot : snapshots) {
+    std::vector<HistorySample> history;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      history = model_.historyFor(snapshot.id);
+    }
+    for (const auto &sample : history) {
+      samples.push_back({snapshot.id, sample});
+    }
+  }
+  std::sort(samples.begin(), samples.end(), [](const auto &left, const auto &right) {
+    return left.sample.stamp < right.sample.stamp;
+  });
+
+  std::map<std::string, Severity> current_levels;
+  std::vector<HistorySample> merged;
+  for (const auto &member_sample : samples) {
+    current_levels[member_sample.id] = member_sample.sample.level;
+
+    Severity group_level = Severity::Ok;
+    for (const auto &[_, level] : current_levels) {
+      group_level = DiagnosticModel::worst(group_level, level);
+    }
+
+    if (!merged.empty() && merged.back().stamp == member_sample.sample.stamp) {
+      merged.back().level = DiagnosticModel::worst(merged.back().level, group_level);
+      continue;
+    }
+    if (!merged.empty() && merged.back().level == group_level) {
+      merged.back().stamp = member_sample.sample.stamp;
+      continue;
+    }
+    merged.push_back({member_sample.sample.stamp, group_level});
+  }
+  return merged;
 }
 
 QColor DiagnosticsMonitorPanel::colorFor(Severity severity) {

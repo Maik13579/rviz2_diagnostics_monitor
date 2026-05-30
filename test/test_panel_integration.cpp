@@ -255,6 +255,16 @@ TEST(PanelIntegration, SelectingGroupShowsMemberDiagnostics) {
   EXPECT_TRUE(names.contains("Sensors/Lidar/Front"));
   EXPECT_TRUE(names.contains("Sensors/Lidar/Rear"));
   EXPECT_FALSE(names.contains("Power/Battery"));
+
+  auto warning_message = message;
+  warning_message.status[1].level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+  warning_message.status[1].message = "Offline";
+  panel.ingestForTest(warning_message);
+
+  const auto history = panel.groupHistoryForTest("All Devices/Sensors/Lidar");
+  ASSERT_GE(history.size(), 2u);
+  EXPECT_EQ(history.front().level, rviz2_diagnostics_monitor::Severity::Warn);
+  EXPECT_EQ(history.back().level, rviz2_diagnostics_monitor::Severity::Error);
 }
 
 int main(int argc, char **argv) {

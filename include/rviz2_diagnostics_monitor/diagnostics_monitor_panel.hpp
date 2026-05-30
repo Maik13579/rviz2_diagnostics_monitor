@@ -57,6 +57,7 @@ public:
   QTreeWidget *overviewTreeForTest() const;
   QLineEdit *overviewSearchForTest() const;
   QTableWidget *detailValuesForTest() const;
+  std::vector<HistorySample> groupHistoryForTest(const QString &path);
 
   static QColor colorFor(Severity severity);
 
@@ -81,6 +82,7 @@ private:
   void restoreExpandedItemPaths(const std::set<QString> &expanded_paths);
   QString itemPath(const QTreeWidgetItem *item) const;
   std::vector<DiagnosticSnapshot> snapshotsForGroupPath(const QString &path);
+  std::vector<HistorySample> historyForGroupPath(const QString &path);
 
   static QString ageText(std::chrono::steady_clock::time_point last_seen,
                          std::chrono::steady_clock::time_point now);
