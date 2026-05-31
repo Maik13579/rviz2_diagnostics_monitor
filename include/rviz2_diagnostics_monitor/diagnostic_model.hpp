@@ -126,6 +126,9 @@ private:
   static std::string signatureFor(const DiagnosticSnapshot &snapshot);
   static std::string lower(std::string text);
 
+  bool isMessageStreamStale(std::chrono::steady_clock::time_point now) const;
+  DiagnosticSnapshot effectiveSnapshot(
+      const Entry &entry, std::chrono::steady_clock::time_point now) const;
   void appendEvent(const DiagnosticSnapshot &snapshot,
                    std::chrono::steady_clock::time_point now);
   void appendHistory(Entry &entry, Severity level,
@@ -137,6 +140,7 @@ private:
   std::unordered_map<std::string, Entry> entries_;
   std::vector<DiagnosticEvent> events_;
   std::vector<HistorySample> overall_history_;
+  std::optional<std::chrono::steady_clock::time_point> last_message_seen_;
 };
 
 } // namespace rviz2_diagnostics_monitor

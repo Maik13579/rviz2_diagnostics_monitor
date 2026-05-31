@@ -54,8 +54,12 @@ TimelineWidget::TimelineWidget(QWidget *parent) : QWidget(parent) {
   setMinimumHeight(26);
 }
 
-void TimelineWidget::setSamples(std::vector<HistorySample> samples) {
+void TimelineWidget::setSamples(std::vector<HistorySample> samples,
+                                std::chrono::steady_clock::time_point now,
+                                std::chrono::milliseconds window) {
   samples_ = std::move(samples);
+  now_ = now;
+  window_ = window;
   update();
 }
 
@@ -68,13 +72,22 @@ void TimelineWidget::paintEvent(QPaintEvent *) {
     return;
   }
 
-  const int segment_width = std::max(1, width() / static_cast<int>(samples_.size()));
-  for (int i = 0; i < static_cast<int>(samples_.size()); ++i) {
-    painter.fillRect(i * segment_width, 0,
-                     i == static_cast<int>(samples_.size()) - 1
-                         ? width() - i * segment_width
-                         : segment_width,
-                     height(), DiagnosticsMonitorPanel::colorFor(samples_[i].level));
+  const auto window = std::max(window_, std::chrono::milliseconds(1));
+  const auto start = now_ - window;
+  std::size_t sample_index = 0;
+  for (int x = 0; x < width(); ++x) {
+    const auto offset = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        window * x / std::max(1, width() - 1));
+    const auto bucket_time = start + offset;
+    while (sample_index + 1 < samples_.size() &&
+           samples_[sample_index + 1].stamp <= bucket_time) {
+      ++sample_index;
+    }
+    const auto color = samples_[sample_index].stamp <= bucket_time
+                           ? DiagnosticsMonitorPanel::colorFor(samples_[sample_index].level)
+                           : QColor("#9ca3af");
+    painter.setPen(color);
+    painter.drawLine(x, 0, x, height());
   }
 }
 
@@ -445,7 +458,10 @@ void DiagnosticsMonitorPanel::refreshUi() {
           .arg(counts.stale));
   summary_label_->setStyleSheet(
       QString("font-weight: 600; color: %1").arg(colorFor(overall).name()));
-  overall_timeline_->setSamples(std::move(overall_history));
+  const auto timeline_now = std::chrono::steady_clock::now();
+  const auto timeline_window = std::chrono::seconds(history_window_spin_->value());
+  overall_timeline_->setSamples(
+      std::move(overall_history), timeline_now, timeline_window);
   refreshOverview(snapshots);
   refreshEvents();
   if (!selected_id_.empty()) {
@@ -560,7 +576,9 @@ void DiagnosticsMonitorPanel::showDetails(const std::string &id) {
   if (!snapshot) {
     detail_label_->setText("Select a diagnostic for details");
     detail_values_->setRowCount(0);
-    selected_timeline_->setSamples({});
+    selected_timeline_->setSamples(
+        {}, std::chrono::steady_clock::now(),
+        std::chrono::seconds(history_window_spin_->value()));
     return;
   }
 
@@ -581,7 +599,9 @@ void DiagnosticsMonitorPanel::showDetails(const std::string &id) {
     detail_values_->setItem(row, 1,
                             new QTableWidgetItem(qstr(snapshot->values[row].value)));
   }
-  selected_timeline_->setSamples(std::move(history));
+  selected_timeline_->setSamples(
+      std::move(history), std::chrono::steady_clock::now(),
+      std::chrono::seconds(history_window_spin_->value()));
 }
 
 void DiagnosticsMonitorPanel::showGroupDetails(const QString &path) {
@@ -589,7 +609,9 @@ void DiagnosticsMonitorPanel::showGroupDetails(const QString &path) {
   if (snapshots.empty()) {
     detail_label_->setText("Select a diagnostic for details");
     detail_values_->setRowCount(0);
-    selected_timeline_->setSamples({});
+    selected_timeline_->setSamples(
+        {}, std::chrono::steady_clock::now(),
+        std::chrono::seconds(history_window_spin_->value()));
     return;
   }
 
@@ -623,7 +645,9 @@ void DiagnosticsMonitorPanel::showGroupDetails(const QString &path) {
     setRowSeverity(detail_values_, row, snapshot.level);
   }
   detail_values_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-  selected_timeline_->setSamples(historyForGroupPath(path));
+  selected_timeline_->setSamples(
+      historyForGroupPath(path), std::chrono::steady_clock::now(),
+      std::chrono::seconds(history_window_spin_->value()));
 }
 
 void DiagnosticsMonitorPanel::addSection(
@@ -819,10 +843,6 @@ DiagnosticsMonitorPanel::historyForGroupPath(const QString &path) {
 
     if (!merged.empty() && merged.back().stamp == member_sample.sample.stamp) {
       merged.back().level = DiagnosticModel::worst(merged.back().level, group_level);
-      continue;
-    }
-    if (!merged.empty() && merged.back().level == group_level) {
-      merged.back().stamp = member_sample.sample.stamp;
       continue;
     }
     merged.push_back({member_sample.sample.stamp, group_level});

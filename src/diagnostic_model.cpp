@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <sstream>
+#include <unordered_set>
 
 namespace rviz2_diagnostics_monitor {
 namespace {
@@ -26,6 +27,25 @@ bool enabledFor(Severity severity, const EventFilter &filter) {
 
 } // namespace
 
+void pruneHistory(std::vector<HistorySample> &history,
+                  std::chrono::steady_clock::time_point cutoff) {
+  const auto first_in_window =
+      std::lower_bound(history.begin(), history.end(), cutoff,
+                       [](const auto &sample, const auto &time) {
+                         return sample.stamp < time;
+                       });
+  if (first_in_window == history.begin()) {
+    return;
+  }
+  if (first_in_window == history.end()) {
+    if (!history.empty()) {
+      history.erase(history.begin(), history.end() - 1);
+    }
+    return;
+  }
+  history.erase(history.begin(), first_in_window - 1);
+}
+
 DiagnosticModel::DiagnosticModel() = default;
 
 void DiagnosticModel::setConfig(const DiagnosticModelConfig &config) {
@@ -39,10 +59,28 @@ void DiagnosticModel::clear() {
   entries_.clear();
   events_.clear();
   overall_history_.clear();
+  last_message_seen_.reset();
 }
 
 void DiagnosticModel::ingest(const diagnostic_msgs::msg::DiagnosticArray &message,
                              std::chrono::steady_clock::time_point now) {
+  const bool was_stream_stale = isMessageStreamStale(now);
+  std::unordered_set<std::string> incoming_ids;
+  incoming_ids.reserve(message.status.size());
+  for (const auto &status : message.status) {
+    incoming_ids.insert(idFor(status));
+  }
+
+  last_message_seen_ = now;
+  if (was_stream_stale) {
+    for (auto &[id, entry] : entries_) {
+      entry.stale_event_emitted = false;
+      if (incoming_ids.find(id) == incoming_ids.end()) {
+        appendHistory(entry, entry.current.level, now);
+      }
+    }
+  }
+
   for (const auto &status : message.status) {
     DiagnosticSnapshot snapshot;
     snapshot.id = idFor(status);
@@ -61,7 +99,7 @@ void DiagnosticModel::ingest(const diagnostic_msgs::msg::DiagnosticArray &messag
     const auto signature = signatureFor(snapshot);
     const bool changed = entry.state_signature.empty() ||
                          entry.state_signature != signature ||
-                         entry.current.locally_stale;
+                         entry.stale_event_emitted;
     entry.current = snapshot;
     entry.state_signature = signature;
     entry.stale_event_emitted = snapshot.level == Severity::Stale;
@@ -76,21 +114,16 @@ void DiagnosticModel::ingest(const diagnostic_msgs::msg::DiagnosticArray &messag
 
 void DiagnosticModel::applyStaleTimeout(
     std::chrono::steady_clock::time_point now) {
+  const bool stream_stale = isMessageStreamStale(now);
   for (auto &[_, entry] : entries_) {
-    if (entry.current.level == Severity::Stale) {
-      continue;
-    }
-    if (now - entry.current.last_seen <= config_.stale_timeout) {
+    if (!stream_stale || entry.current.level == Severity::Stale) {
+      entry.stale_event_emitted = entry.current.level == Severity::Stale;
       continue;
     }
 
-    entry.current.level = Severity::Stale;
-    entry.current.locally_stale = true;
-    entry.current.message = "No fresh diagnostic data";
-    entry.state_signature = signatureFor(entry.current);
     appendHistory(entry, Severity::Stale, now);
     if (!entry.stale_event_emitted) {
-      appendEvent(entry.current, now);
+      appendEvent(effectiveSnapshot(entry, now), now);
       entry.stale_event_emitted = true;
     }
   }
@@ -104,7 +137,7 @@ std::vector<DiagnosticSnapshot> DiagnosticModel::snapshots(
   std::vector<DiagnosticSnapshot> result;
   result.reserve(entries_.size());
   for (const auto &[_, entry] : entries_) {
-    result.push_back(entry.current);
+    result.push_back(effectiveSnapshot(entry, now));
   }
   std::sort(result.begin(), result.end(),
             [](const auto &left, const auto &right) {
@@ -124,14 +157,14 @@ std::optional<DiagnosticSnapshot> DiagnosticModel::snapshot(
   if (it == entries_.end()) {
     return std::nullopt;
   }
-  return it->second.current;
+  return effectiveSnapshot(it->second, now);
 }
 
 SummaryCounts DiagnosticModel::counts(std::chrono::steady_clock::time_point now) {
   applyStaleTimeout(now);
   SummaryCounts counts;
   for (const auto &[_, entry] : entries_) {
-    switch (entry.current.level) {
+    switch (effectiveSnapshot(entry, now).level) {
     case Severity::Ok:
       ++counts.ok;
       break;
@@ -154,7 +187,7 @@ Severity DiagnosticModel::overallSeverity(
   applyStaleTimeout(now);
   Severity severity = Severity::Ok;
   for (const auto &[_, entry] : entries_) {
-    severity = worst(severity, entry.current.level);
+    severity = worst(severity, effectiveSnapshot(entry, now).level);
   }
   return severity;
 }
@@ -167,16 +200,17 @@ TreeNode DiagnosticModel::tree(std::chrono::steady_clock::time_point now) {
 
   for (const auto &[id, entry] : entries_) {
     auto *node = &root;
-    node->severity = worst(node->severity, entry.current.level);
-    for (const auto &part : splitDiagnosticName(entry.current.name)) {
+    const auto snapshot = effectiveSnapshot(entry, now);
+    node->severity = worst(node->severity, snapshot.level);
+    for (const auto &part : splitDiagnosticName(snapshot.name)) {
       auto [child, _] = node->children.emplace(part, TreeNode{});
       child->second.label = part;
       child->second.severity = worst(child->second.severity,
-                                     entry.current.level);
+                                     snapshot.level);
       node = &child->second;
     }
     node->diagnostic_id = id;
-    node->severity = worst(node->severity, entry.current.level);
+    node->severity = worst(node->severity, snapshot.level);
   }
   return root;
 }
@@ -301,7 +335,6 @@ void DiagnosticModel::appendEvent(const DiagnosticSnapshot &snapshot,
 void DiagnosticModel::appendHistory(Entry &entry, Severity level,
                                     std::chrono::steady_clock::time_point now) {
   if (!entry.history.empty() && entry.history.back().level == level) {
-    entry.history.back().stamp = now;
     return;
   }
   entry.history.push_back({now, level});
@@ -311,10 +344,9 @@ void DiagnosticModel::appendOverallHistory(
     std::chrono::steady_clock::time_point now) {
   Severity severity = Severity::Ok;
   for (const auto &[_, entry] : entries_) {
-    severity = worst(severity, entry.current.level);
+    severity = worst(severity, effectiveSnapshot(entry, now).level);
   }
   if (!overall_history_.empty() && overall_history_.back().level == severity) {
-    overall_history_.back().stamp = now;
     return;
   }
   overall_history_.push_back({now, severity});
@@ -323,25 +355,33 @@ void DiagnosticModel::appendOverallHistory(
 void DiagnosticModel::prune(std::chrono::steady_clock::time_point now) {
   const auto cutoff = now - config_.history_window;
   for (auto &[_, entry] : entries_) {
-    entry.history.erase(
-        std::remove_if(entry.history.begin(), entry.history.end(),
-                       [cutoff](const auto &sample) {
-                         return sample.stamp < cutoff;
-                       }),
-        entry.history.end());
+    pruneHistory(entry.history, cutoff);
   }
-  overall_history_.erase(
-      std::remove_if(overall_history_.begin(), overall_history_.end(),
-                     [cutoff](const auto &sample) {
-                       return sample.stamp < cutoff;
-                     }),
-      overall_history_.end());
+  pruneHistory(overall_history_, cutoff);
   if (events_.size() > config_.max_event_rows) {
     events_.erase(events_.begin(),
                   events_.begin() +
                       static_cast<std::ptrdiff_t>(events_.size() -
                                                   config_.max_event_rows));
   }
+}
+
+bool DiagnosticModel::isMessageStreamStale(
+    std::chrono::steady_clock::time_point now) const {
+  return config_.stale_timeout > std::chrono::milliseconds::zero() &&
+         last_message_seen_.has_value() &&
+         now - *last_message_seen_ > config_.stale_timeout;
+}
+
+DiagnosticSnapshot DiagnosticModel::effectiveSnapshot(
+    const Entry &entry, std::chrono::steady_clock::time_point now) const {
+  auto snapshot = entry.current;
+  if (snapshot.level != Severity::Stale && isMessageStreamStale(now)) {
+    snapshot.level = Severity::Stale;
+    snapshot.locally_stale = true;
+    snapshot.message = "No fresh diagnostic data";
+  }
+  return snapshot;
 }
 
 } // namespace rviz2_diagnostics_monitor

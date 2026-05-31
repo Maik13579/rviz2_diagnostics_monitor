@@ -29,13 +29,17 @@ class TimelineWidget : public QWidget {
 public:
   explicit TimelineWidget(QWidget *parent = nullptr);
 
-  void setSamples(std::vector<HistorySample> samples);
+  void setSamples(std::vector<HistorySample> samples,
+                  std::chrono::steady_clock::time_point now,
+                  std::chrono::milliseconds window);
 
 protected:
   void paintEvent(QPaintEvent *event) override;
 
 private:
   std::vector<HistorySample> samples_;
+  std::chrono::steady_clock::time_point now_{};
+  std::chrono::milliseconds window_{std::chrono::minutes(10)};
 };
 
 class DiagnosticsMonitorPanel : public rviz_common::Panel {

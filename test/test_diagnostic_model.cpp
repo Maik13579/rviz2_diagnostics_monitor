@@ -141,8 +141,9 @@ TEST(DiagnosticModel, HistoryPruningRespectsWindow) {
                now + 11min);
 
   const auto history = model.historyFor("CPU\nipc");
-  ASSERT_EQ(history.size(), 1u);
-  EXPECT_EQ(history.front().level, Severity::Warn);
+  ASSERT_EQ(history.size(), 2u);
+  EXPECT_EQ(history.front().level, Severity::Ok);
+  EXPECT_EQ(history.back().level, Severity::Warn);
 }
 
 TEST(DiagnosticModel, LocalStaleTimeoutConvertsMissingUpdates) {
@@ -160,6 +161,41 @@ TEST(DiagnosticModel, LocalStaleTimeoutConvertsMissingUpdates) {
   EXPECT_EQ(counts.stale, 1);
   ASSERT_EQ(model.events().size(), 2u);
   EXPECT_EQ(model.events().back().snapshot.level, Severity::Stale);
+}
+
+TEST(DiagnosticModel, IncomingMessagesKeepUnchangedStatesFresh) {
+  DiagnosticModel model;
+  DiagnosticModelConfig config;
+  config.stale_timeout = 1000ms;
+  model.setConfig(config);
+  const auto now = std::chrono::steady_clock::now();
+  model.ingest(array({status("Lidar", "front",
+                             diagnostic_msgs::msg::DiagnosticStatus::OK, "OK")}),
+               now);
+
+  model.ingest(array({}), now + 1500ms);
+  const auto counts = model.counts(now + 2400ms);
+
+  EXPECT_EQ(counts.ok, 1);
+  EXPECT_EQ(counts.stale, 0);
+}
+
+TEST(DiagnosticModel, NewMessageClearsLocalStaleOverlay) {
+  DiagnosticModel model;
+  DiagnosticModelConfig config;
+  config.stale_timeout = 1000ms;
+  model.setConfig(config);
+  const auto now = std::chrono::steady_clock::now();
+  model.ingest(array({status("Lidar", "front",
+                             diagnostic_msgs::msg::DiagnosticStatus::OK, "OK")}),
+               now);
+  ASSERT_EQ(model.counts(now + 1500ms).stale, 1);
+
+  model.ingest(array({}), now + 1600ms);
+  const auto counts = model.counts(now + 1700ms);
+
+  EXPECT_EQ(counts.ok, 1);
+  EXPECT_EQ(counts.stale, 0);
 }
 
 TEST(DiagnosticModel, EventFilteringUsesSeverityHardwareAndSearch) {
