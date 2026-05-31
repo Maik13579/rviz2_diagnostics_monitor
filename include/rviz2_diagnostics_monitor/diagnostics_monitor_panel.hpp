@@ -87,6 +87,8 @@ private:
   QString itemPath(const QTreeWidgetItem *item) const;
   std::vector<DiagnosticSnapshot> snapshotsForGroupPath(const QString &path);
   std::vector<HistorySample> historyForGroupPath(const QString &path);
+  static std::vector<DiagnosticSnapshot> aggregateOverviewSnapshots(
+      const std::vector<DiagnosticSnapshot> &snapshots);
 
   static QString ageText(std::chrono::steady_clock::time_point last_seen,
                          std::chrono::steady_clock::time_point now);

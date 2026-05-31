@@ -35,6 +35,37 @@ diagnostic_msgs::msg::DiagnosticArray makeMessage(uint8_t level,
   return array;
 }
 
+diagnostic_msgs::msg::DiagnosticStatus makeStatus(
+    const std::string &name, const std::string &hardware_id, uint8_t level,
+    const std::string &message) {
+  diagnostic_msgs::msg::DiagnosticStatus status;
+  status.name = name;
+  status.hardware_id = hardware_id;
+  status.level = level;
+  status.message = message;
+  return status;
+}
+
+QTreeWidgetItem *topLevelItem(QTreeWidget *tree, const QString &text) {
+  for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+    auto *item = tree->topLevelItem(i);
+    if (item->text(0) == text) {
+      return item;
+    }
+  }
+  return nullptr;
+}
+
+int childCountWithName(const QTreeWidgetItem *parent, const QString &name) {
+  int count = 0;
+  for (int i = 0; i < parent->childCount(); ++i) {
+    if (parent->child(i)->text(0) == name) {
+      ++count;
+    }
+  }
+  return count;
+}
+
 } // namespace
 
 TEST(PanelIntegration, ReceivesDiagnosticsAndTracksStateChanges) {
@@ -265,6 +296,93 @@ TEST(PanelIntegration, SelectingGroupShowsMemberDiagnostics) {
   ASSERT_GE(history.size(), 2u);
   EXPECT_EQ(history.front().level, rviz2_diagnostics_monitor::Severity::Warn);
   EXPECT_EQ(history.back().level, rviz2_diagnostics_monitor::Severity::Error);
+}
+
+TEST(PanelIntegration, OverviewAggregatesSameNameDiagnostics) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  diagnostic_msgs::msg::DiagnosticArray message;
+  message.status = {
+      makeStatus("Drive/Motor", "",
+                 diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Fault"),
+      makeStatus("Drive/Motor", "motor_controller",
+                 diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Fault"),
+  };
+
+  panel.ingestForTest(message);
+  panel.refreshForTest();
+
+  auto *tree = panel.overviewTreeForTest();
+  ASSERT_NE(tree, nullptr);
+  auto *errors = topLevelItem(tree, "Error Devices");
+  ASSERT_NE(errors, nullptr);
+  EXPECT_EQ(childCountWithName(errors, "Drive/Motor"), 1);
+
+  const auto motor_items =
+      tree->findItems("Motor", Qt::MatchExactly | Qt::MatchRecursive, 0);
+  EXPECT_EQ(motor_items.size(), 1);
+
+  const auto error_rows =
+      tree->findItems("Drive/Motor", Qt::MatchExactly | Qt::MatchRecursive, 0);
+  ASSERT_EQ(error_rows.size(), 1);
+  EXPECT_EQ(error_rows.front()->text(3), "motor_controller");
+}
+
+TEST(PanelIntegration, OverviewSameNameSeverityUsesWorstLevel) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  diagnostic_msgs::msg::DiagnosticArray message;
+  message.status = {
+      makeStatus("Drive/Motor", "motor_controller",
+                 diagnostic_msgs::msg::DiagnosticStatus::OK, "Nominal"),
+      makeStatus("Drive/Motor", "",
+                 diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Over current"),
+  };
+
+  panel.ingestForTest(message);
+  panel.refreshForTest();
+
+  auto *tree = panel.overviewTreeForTest();
+  ASSERT_NE(tree, nullptr);
+  const auto motor_items =
+      tree->findItems("Motor", Qt::MatchExactly | Qt::MatchRecursive, 0);
+  ASSERT_EQ(motor_items.size(), 1);
+
+  EXPECT_EQ(motor_items.front()->text(1), "ERROR");
+  EXPECT_EQ(motor_items.front()->foreground(0).color(),
+            rviz2_diagnostics_monitor::DiagnosticsMonitorPanel::colorFor(
+                rviz2_diagnostics_monitor::Severity::Error));
+}
+
+TEST(PanelIntegration, OverviewStaleDuplicateUsesWorstCurrentSeverity) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  diagnostic_msgs::msg::DiagnosticArray message;
+  message.status = {
+      makeStatus("Drive/Motor", "",
+                 diagnostic_msgs::msg::DiagnosticStatus::STALE, "No data"),
+      makeStatus("Drive/Motor", "motor_controller",
+                 diagnostic_msgs::msg::DiagnosticStatus::OK, "Nominal"),
+  };
+
+  panel.ingestForTest(message);
+  panel.refreshForTest();
+
+  auto *tree = panel.overviewTreeForTest();
+  ASSERT_NE(tree, nullptr);
+  auto *stale = topLevelItem(tree, "Stale Devices");
+  ASSERT_NE(stale, nullptr);
+  EXPECT_EQ(childCountWithName(stale, "Drive/Motor"), 1);
+
+  const auto motor_items =
+      tree->findItems("Motor", Qt::MatchExactly | Qt::MatchRecursive, 0);
+  ASSERT_EQ(motor_items.size(), 1);
+  EXPECT_EQ(motor_items.front()->text(1), "STALE");
+
+  const auto stale_rows =
+      tree->findItems("Drive/Motor", Qt::MatchExactly | Qt::MatchRecursive, 0);
+  ASSERT_EQ(stale_rows.size(), 1);
+  EXPECT_EQ(stale_rows.front()->text(3), "motor_controller");
 }
 
 int main(int argc, char **argv) {

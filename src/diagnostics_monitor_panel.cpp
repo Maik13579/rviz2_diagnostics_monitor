@@ -477,11 +477,13 @@ void DiagnosticsMonitorPanel::refreshOverview(
   const auto expanded_paths = expandedItemPaths();
   const auto selected_id = selected_id_;
   const auto scroll_position = overview_tree_->verticalScrollBar()->value();
+  const auto overview_snapshots = aggregateOverviewSnapshots(snapshots);
   std::vector<DiagnosticSnapshot> filtered;
-  std::copy_if(snapshots.begin(), snapshots.end(), std::back_inserter(filtered),
-               [&search](const auto &snapshot) {
-                 return DiagnosticModel::matchesSearch(snapshot, search);
-               });
+  std::copy_if(
+      overview_snapshots.begin(), overview_snapshots.end(),
+      std::back_inserter(filtered), [&search](const auto &snapshot) {
+        return DiagnosticModel::matchesSearch(snapshot, search);
+      });
 
   overview_tree_->clear();
   addSection(nullptr, "Error Devices", filtered, Severity::Error);
@@ -848,6 +850,55 @@ DiagnosticsMonitorPanel::historyForGroupPath(const QString &path) {
     merged.push_back({member_sample.sample.stamp, group_level});
   }
   return merged;
+}
+
+std::vector<DiagnosticSnapshot>
+DiagnosticsMonitorPanel::aggregateOverviewSnapshots(
+    const std::vector<DiagnosticSnapshot> &snapshots) {
+  std::map<std::string, DiagnosticSnapshot> aggregated;
+
+  for (const auto &snapshot : snapshots) {
+    auto [it, inserted] = aggregated.emplace(snapshot.name, snapshot);
+    if (inserted) {
+      if (it->second.hardware_id.empty()) {
+        it->second.hardware_id = "-";
+      }
+      continue;
+    }
+
+    auto &representative = it->second;
+    const bool snapshot_is_worse =
+        DiagnosticModel::worst(representative.level, snapshot.level) ==
+            snapshot.level &&
+        representative.level != snapshot.level;
+
+    if (snapshot_is_worse) {
+      const auto display_hardware_id =
+          snapshot.hardware_id.empty() ? representative.hardware_id
+                                       : snapshot.hardware_id;
+      representative = snapshot;
+      representative.hardware_id = display_hardware_id.empty() ? "-"
+                                                               : display_hardware_id;
+      continue;
+    }
+
+    if (representative.hardware_id == "-" && !snapshot.hardware_id.empty()) {
+      representative.hardware_id = snapshot.hardware_id;
+    }
+  }
+
+  std::vector<DiagnosticSnapshot> result;
+  result.reserve(aggregated.size());
+  for (auto &[_, snapshot] : aggregated) {
+    result.push_back(std::move(snapshot));
+  }
+  std::sort(result.begin(), result.end(), [](const auto &left, const auto &right) {
+    if (left.level != right.level) {
+      return static_cast<int>(left.level) > static_cast<int>(right.level);
+    }
+    return left.name < right.name;
+  });
+  return result;
 }
 
 QColor DiagnosticsMonitorPanel::colorFor(Severity severity) {
