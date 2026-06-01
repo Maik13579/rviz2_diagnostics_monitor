@@ -75,7 +75,6 @@ TEST(PanelConfig, RoundTripsSettings) {
   input.mapSetValue("Diagnostics Topic", QString("/test_diagnostics"));
   input.mapSetValue("Stale Timeout Ms", 1200);
   input.mapSetValue("History Window Sec", 42);
-  input.mapSetValue("Max Event Rows", 123);
   input.mapSetValue("Show OK Events", false);
   input.mapSetValue("Show WARN Events", true);
   input.mapSetValue("Show ERROR Events", false);
@@ -95,8 +94,6 @@ TEST(PanelConfig, RoundTripsSettings) {
   EXPECT_EQ(int_value, 1200);
   ASSERT_TRUE(output.mapGetInt("History Window Sec", &int_value));
   EXPECT_EQ(int_value, 42);
-  ASSERT_TRUE(output.mapGetInt("Max Event Rows", &int_value));
-  EXPECT_EQ(int_value, 123);
   ASSERT_TRUE(output.mapGetBool("Show OK Events", &bool_value));
   EXPECT_FALSE(bool_value);
   ASSERT_TRUE(output.mapGetBool("Show WARN Events", &bool_value));

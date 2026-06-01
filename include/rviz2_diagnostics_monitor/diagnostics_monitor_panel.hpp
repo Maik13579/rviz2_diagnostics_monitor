@@ -4,7 +4,9 @@
 #pragma once
 
 #include <mutex>
+#include <functional>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -40,14 +42,21 @@ public:
   void setSamples(std::vector<HistorySample> samples,
                   std::chrono::steady_clock::time_point now,
                   std::chrono::milliseconds window);
+  void setSelectedStamp(
+      std::optional<std::chrono::steady_clock::time_point> stamp);
+  void setClickCallback(
+      std::function<void(std::chrono::steady_clock::time_point)> callback);
 
 protected:
+  void mousePressEvent(QMouseEvent *event) override;
   void paintEvent(QPaintEvent *event) override;
 
 private:
   std::vector<HistorySample> samples_;
   std::chrono::steady_clock::time_point now_{};
   std::chrono::milliseconds window_{std::chrono::minutes(10)};
+  std::optional<std::chrono::steady_clock::time_point> selected_stamp_;
+  std::function<void(std::chrono::steady_clock::time_point)> click_callback_;
 };
 
 class DiagnosticsMonitorPanel : public rviz_common::Panel {
@@ -72,6 +81,7 @@ public:
   QLineEdit *overviewSearchForTest() const;
   QDialog *detailDialogForTest(const std::string &id) const;
   QDialog *groupDialogForTest(const QString &path) const;
+  void openGroupDialogForTest(const QString &path);
   int detailDialogCountForTest() const;
   QListWidget *eventFeedListForTest() const;
   std::vector<HistorySample> groupHistoryForTest(const QString &path);
@@ -118,7 +128,6 @@ private:
   QLineEdit *topic_edit_{nullptr};
   QSpinBox *stale_timeout_spin_{nullptr};
   QSpinBox *history_window_spin_{nullptr};
-  QSpinBox *max_events_spin_{nullptr};
   QLineEdit *overview_search_{nullptr};
   QLabel *summary_label_{nullptr};
   TimelineWidget *overall_timeline_{nullptr};
@@ -129,8 +138,8 @@ private:
   QCheckBox *event_warn_{nullptr};
   QCheckBox *event_error_{nullptr};
   QCheckBox *event_stale_{nullptr};
+  QCheckBox *event_wrap_{nullptr};
   QPushButton *event_pause_button_{nullptr};
-  QLineEdit *event_hardware_filter_{nullptr};
   QLineEdit *event_search_{nullptr};
   QListWidget *event_list_{nullptr};
   bool event_feed_paused_{false};

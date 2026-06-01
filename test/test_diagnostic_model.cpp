@@ -125,6 +125,27 @@ TEST(DiagnosticModel, EventFeedAppendsOnlyOnStateChanges) {
   EXPECT_EQ(model.events().size(), 3u);
 }
 
+TEST(DiagnosticModel, EventSequencesSeparateSameMessageStatuses) {
+  DiagnosticModel model;
+  const auto now = std::chrono::steady_clock::now();
+  model.ingest(array({
+                   status("Drive/Motor", "left",
+                          diagnostic_msgs::msg::DiagnosticStatus::WARN,
+                          "Left warm"),
+                   status("Drive/Motor", "right",
+                          diagnostic_msgs::msg::DiagnosticStatus::ERROR,
+                          "Right fault"),
+               }),
+               now);
+
+  const auto &events = model.events();
+  ASSERT_EQ(events.size(), 2u);
+  EXPECT_EQ(events[0].sequence, 1u);
+  EXPECT_EQ(events[1].sequence, 2u);
+  EXPECT_NE(events[0].sequence, events[1].sequence);
+  EXPECT_EQ(events[0].stamp, events[1].stamp);
+}
+
 TEST(DiagnosticModel, HistoryPruningRespectsWindow) {
   DiagnosticModel model;
   DiagnosticModelConfig config;

@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -25,6 +27,7 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMetaObject>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
 #include <QScrollBar>
@@ -45,6 +48,13 @@ namespace rviz2_diagnostics_monitor {
 namespace {
 
 constexpr const char *kDefaultTopic = "/diagnostics";
+constexpr int kEventSeverityRole = Qt::UserRole + 10;
+constexpr int kEventAgeRole = Qt::UserRole + 11;
+constexpr int kEventNameRole = Qt::UserRole + 12;
+constexpr int kEventHardwareRole = Qt::UserRole + 13;
+constexpr int kEventMessageRole = Qt::UserRole + 14;
+constexpr int kEventValuesRole = Qt::UserRole + 15;
+constexpr int kEventSequenceRole = Qt::UserRole + 16;
 
 QString qstr(const std::string &text) {
   return QString::fromStdString(text);
@@ -88,80 +98,54 @@ QLabel *eventLabel(const QString &text, const QString &object_name,
   return label;
 }
 
-QWidget *buildEventRow(const DiagnosticEvent &event,
-                       std::chrono::steady_clock::time_point now,
-                       QWidget *parent) {
-  auto *row = new QWidget(parent);
-  row->setObjectName("diagnostic_event_row");
-  row->setMinimumWidth(0);
-  row->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
-  const auto row_palette = row->palette();
-  const auto severity_color = DiagnosticsMonitorPanel::colorFor(event.snapshot.level);
-  const auto row_text = row_palette.color(QPalette::Text);
-  const auto secondary_text = secondaryTextFor(row_palette);
-  row->setStyleSheet(
-      QString("#diagnostic_event_row {"
-              "border-left: 4px solid %1;"
-              "border-radius: 3px;"
-              "}")
-          .arg(severity_color.name()));
-
-  auto *layout = new QVBoxLayout(row);
-  layout->setContentsMargins(8, 6, 8, 6);
-  layout->setSpacing(3);
-
-  auto *top = new QWidget(row);
-  auto *top_layout = new QHBoxLayout(top);
-  top_layout->setContentsMargins(0, 0, 0, 0);
-  top_layout->setSpacing(6);
-
-  auto *severity = eventLabel(
-      qstr(DiagnosticModel::severityLabel(event.snapshot.level)),
-      "event_severity", top);
-  severity->setWordWrap(false);
-  severity->setAlignment(Qt::AlignCenter);
-  severity->setStyleSheet(
+QLabel *severityBadge(Severity severity, const QString &object_name,
+                      QWidget *parent) {
+  const auto severity_color = DiagnosticsMonitorPanel::colorFor(severity);
+  auto *severity_label = eventLabel(
+      qstr(DiagnosticModel::severityLabel(severity)), object_name, parent);
+  severity_label->setWordWrap(false);
+  severity_label->setAlignment(Qt::AlignCenter);
+  severity_label->setStyleSheet(
       QString("font-weight: 700; color: %1; border: 1px solid %1; "
               "border-radius: 3px; padding: 1px 5px;")
           .arg(severity_color.name()));
-  severity->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+  severity_label->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+  return severity_label;
+}
 
-  auto *age = eventLabel(DiagnosticsMonitorPanel::ageText(event.stamp, now),
-                         "event_age", top);
-  age->setWordWrap(false);
-  age->setStyleSheet(QString("color: %1;").arg(secondary_text.name()));
-  age->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+QString mainEventItemText(const DiagnosticEvent &event,
+                          std::chrono::steady_clock::time_point now) {
+  const auto hardware =
+      event.snapshot.hardware_id.empty() ? std::string("-") : event.snapshot.hardware_id;
+  return QString("[%1] %2 (%3) %4")
+      .arg(DiagnosticsMonitorPanel::ageText(event.stamp, now))
+      .arg(qstr(event.snapshot.name))
+      .arg(qstr(hardware))
+      .arg(qstr(event.snapshot.message));
+}
 
-  auto *name = eventLabel(qstr(event.snapshot.name), "event_name", top);
-  name->setWordWrap(false);
-  name->setStyleSheet(QString("font-weight: 600; color: %1;")
-                          .arg(row_text.name()));
+QString detailEventItemText(const DiagnosticEvent &event,
+                            std::chrono::steady_clock::time_point now) {
+  return QString("%1   %2   %3")
+      .arg(qstr(DiagnosticModel::severityLabel(event.snapshot.level)))
+      .arg(DiagnosticsMonitorPanel::ageText(event.stamp, now))
+      .arg(qstr(event.snapshot.message));
+}
 
-  top_layout->addWidget(severity);
-  top_layout->addWidget(age);
-  top_layout->addWidget(name, 1);
-  layout->addWidget(top);
-
-  auto *hardware =
-      eventLabel(QString("Hardware: %1")
-                     .arg(qstr(event.snapshot.hardware_id.empty()
-                                   ? std::string("-")
-                                   : event.snapshot.hardware_id)),
-                 "event_hardware", row);
-  hardware->setStyleSheet(QString("color: %1;").arg(secondary_text.name()));
-  layout->addWidget(hardware);
-
-  auto *message = eventLabel(qstr(event.snapshot.message), "event_message", row);
-  message->setStyleSheet(QString("color: %1;").arg(row_text.name()));
-  layout->addWidget(message);
-
-  if (!event.snapshot.values.empty()) {
-    auto *values = eventLabel(valuesText(event.snapshot.values), "event_values", row);
-    values->setStyleSheet(QString("color: %1;").arg(secondary_text.name()));
-    layout->addWidget(values);
-  }
-
-  return row;
+void setEventItemRoles(QListWidgetItem *item, const DiagnosticEvent &event,
+                       std::chrono::steady_clock::time_point now) {
+  item->setData(kEventSeverityRole,
+                qstr(DiagnosticModel::severityLabel(event.snapshot.level)));
+  item->setData(kEventAgeRole, DiagnosticsMonitorPanel::ageText(event.stamp, now));
+  item->setData(kEventNameRole, qstr(event.snapshot.name));
+  item->setData(
+      kEventHardwareRole,
+      qstr(event.snapshot.hardware_id.empty() ? std::string("-")
+                                              : event.snapshot.hardware_id));
+  item->setData(kEventMessageRole, qstr(event.snapshot.message));
+  item->setData(kEventValuesRole, valuesText(event.snapshot.values));
+  item->setData(kEventSequenceRole,
+                QVariant::fromValue(static_cast<qulonglong>(event.sequence)));
 }
 
 void updateEventRowAge(QListWidgetItem *item,
@@ -175,6 +159,25 @@ void updateEventRowAge(QListWidgetItem *item,
   }
   auto *age = row->findChild<QLabel *>("event_age");
   if (age == nullptr) {
+    const auto stamp =
+        std::chrono::steady_clock::time_point(
+            std::chrono::steady_clock::duration(
+                item->data(Qt::UserRole + 1).toLongLong()));
+    const auto age_text = DiagnosticsMonitorPanel::ageText(stamp, now);
+    item->setData(kEventAgeRole, age_text);
+    const auto mode = item->data(Qt::UserRole + 3).toString();
+    if (mode == "main") {
+      item->setText(QString("[%1] %2 (%3) %4")
+                        .arg(age_text)
+                        .arg(item->data(kEventNameRole).toString())
+                        .arg(item->data(kEventHardwareRole).toString())
+                        .arg(item->data(kEventMessageRole).toString()));
+    } else if (mode == "detail") {
+      item->setText(QString("%1   %2   %3")
+                        .arg(item->data(kEventSeverityRole).toString())
+                        .arg(age_text)
+                        .arg(item->data(kEventMessageRole).toString()));
+    }
     return;
   }
   const auto stamp =
@@ -184,13 +187,32 @@ void updateEventRowAge(QListWidgetItem *item,
   age->setText(DiagnosticsMonitorPanel::ageText(stamp, now));
 }
 
+void updateVisibleEventRowAges(QListWidget *list,
+                               std::chrono::steady_clock::time_point now) {
+  if (list == nullptr || list->count() == 0 || !list->isVisible()) {
+    return;
+  }
+
+  const int top = std::max(0, list->indexAt(QPoint(0, 0)).row());
+  const int bottom_index =
+      list->indexAt(QPoint(0, std::max(0, list->viewport()->height() - 1))).row();
+  const int bottom = bottom_index < 0 ? list->count() - 1 : bottom_index;
+  for (int row = top; row <= bottom && row < list->count(); ++row) {
+    updateEventRowAge(list->item(row), now);
+  }
+}
+
+std::vector<DiagnosticEvent> newestRenderedEvents(
+    const std::vector<DiagnosticEvent> &events) {
+  return events;
+}
+
 } // namespace
 
 class DiagnosticDetailDialog : public QDialog {
 public:
   explicit DiagnosticDetailDialog(const std::string &id, QWidget *parent = nullptr)
       : QDialog(parent), id_(id) {
-    setAttribute(Qt::WA_DeleteOnClose);
     setWindowModality(Qt::NonModal);
     resize(620, 520);
 
@@ -198,29 +220,69 @@ public:
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(6);
 
-    header_ = new QLabel(this);
-    header_->setWordWrap(true);
     timeline_ = new TimelineWidget(this);
+    timeline_->setObjectName("diagnostic_detail_timeline");
+
+    auto *header_row = new QWidget(this);
+    auto *header_layout = new QHBoxLayout(header_row);
+    header_layout->setContentsMargins(0, 0, 0, 0);
+    header_layout->setSpacing(6);
+    severity_badge_ = severityBadge(Severity::Stale, "diagnostic_detail_severity",
+                                    header_row);
+    header_ = new QLabel(header_row);
+    header_->setObjectName("diagnostic_detail_header");
+    header_->setWordWrap(true);
+    pause_button_ = new QPushButton("Pause Feed", header_row);
+    pause_button_->setObjectName("diagnostic_detail_pause_button");
+    pause_button_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    header_layout->addWidget(severity_badge_);
+    header_layout->addWidget(header_, 1);
+    header_layout->addWidget(pause_button_);
+
+    events_ = new QListWidget(this);
+    events_->setObjectName("diagnostic_detail_events");
+    events_->setMinimumWidth(0);
+    events_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+    events_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    events_->setSelectionMode(QAbstractItemView::SingleSelection);
+    events_->setUniformItemSizes(false);
+    events_->setSpacing(4);
+    events_->setFrameShape(QFrame::NoFrame);
+    events_->setStyleSheet(
+        "QListWidget#diagnostic_detail_events::item { margin: 0; padding: 0; }");
+
+    message_ = new QLabel(this);
+    message_->setObjectName("diagnostic_detail_message");
+    message_->setWordWrap(true);
+    message_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
     values_ = new QTableWidget(0, 2, this);
     values_->setObjectName("diagnostic_detail_values");
     values_->setHorizontalHeaderLabels({"Key", "Value"});
     values_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     values_->setAlternatingRowColors(true);
 
-    events_ = new QTableWidget(0, 4, this);
-    events_->setObjectName("diagnostic_detail_events");
-    events_->setHorizontalHeaderLabels({"Age", "Level", "Message", "Values"});
-    events_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-    events_->horizontalHeader()->setStretchLastSection(true);
-    events_->setColumnWidth(0, 80);
-    events_->setColumnWidth(1, 58);
-    events_->setColumnWidth(2, 180);
-    events_->setAlternatingRowColors(true);
-
-    layout->addWidget(header_);
-    layout->addWidget(timeline_);
-    layout->addWidget(values_, 1);
+    layout->addWidget(header_row);
     layout->addWidget(events_, 1);
+    layout->addWidget(message_);
+    layout->addWidget(values_, 1);
+    layout->addWidget(timeline_);
+
+    QObject::connect(events_, &QListWidget::currentRowChanged, this,
+                     [this](int row) { showEventDetail(row); });
+    timeline_->setClickCallback([this](auto stamp) {
+      selectClosestEvent(stamp);
+    });
+    QObject::connect(pause_button_, &QPushButton::clicked, this, [this]() {
+      paused_ = !paused_;
+      pause_button_->setText(paused_ ? "Continue Feed" : "Pause Feed");
+      if (!paused_) {
+        event_row_signatures_.clear();
+        events_->setCurrentRow(-1);
+        refresh(last_snapshot_, last_history_, last_events_, last_now_,
+                last_window_);
+      }
+    });
   }
 
   const std::string &id() const { return id_; }
@@ -230,68 +292,230 @@ public:
                const std::vector<DiagnosticEvent> &events,
                std::chrono::steady_clock::time_point now,
                std::chrono::milliseconds window) {
+    last_snapshot_ = snapshot;
+    last_history_ = history;
+    last_events_ = events;
+    last_now_ = now;
+    last_window_ = window;
+
     if (!snapshot) {
       setWindowTitle("Diagnostic unavailable [-]");
       header_->setText("Diagnostic is no longer available");
+      severity_badge_->setText(qstr(DiagnosticModel::severityLabel(Severity::Stale)));
+      severity_badge_->setStyleSheet(
+          QString("font-weight: 700; color: %1; border: 1px solid %1; "
+                  "border-radius: 3px; padding: 1px 5px;")
+              .arg(DiagnosticsMonitorPanel::colorFor(Severity::Stale).name()));
       values_->setRowCount(0);
+      message_->clear();
       timeline_->setSamples({}, now, window);
     } else {
       const auto hardware =
           snapshot->hardware_id.empty() ? std::string("-") : snapshot->hardware_id;
       setWindowTitle(qstr(snapshot->name + " [" + hardware + "]"));
-      header_->setText(
-          QString("%1\nHardware: %2   Severity: %3\nMessage: %4\nLast update: %5%6")
-              .arg(qstr(snapshot->name))
-              .arg(qstr(hardware))
-              .arg(qstr(DiagnosticModel::severityLabel(snapshot->level)))
-              .arg(qstr(snapshot->message))
-              .arg(DiagnosticsMonitorPanel::ageText(snapshot->last_seen, now))
-              .arg(snapshot->locally_stale ? "   Locally stale" : ""));
+      header_->setText(QString("Last update: %1%2")
+                           .arg(DiagnosticsMonitorPanel::ageText(
+                               snapshot->last_seen, now))
+                           .arg(snapshot->locally_stale ? "   Locally stale" : ""));
       header_->setStyleSheet(
           QString("font-weight: 600; color: %1")
-              .arg(DiagnosticsMonitorPanel::colorFor(snapshot->level).name()));
-      values_->setRowCount(static_cast<int>(snapshot->values.size()));
-      for (int row = 0; row < static_cast<int>(snapshot->values.size()); ++row) {
-        values_->setItem(row, 0,
-                         new QTableWidgetItem(qstr(snapshot->values[row].key)));
-        values_->setItem(row, 1,
-                         new QTableWidgetItem(qstr(snapshot->values[row].value)));
-      }
+              .arg(palette().color(QPalette::Text).name()));
+      updateSeverityBadge(snapshot->level);
       timeline_->setSamples(std::move(history), now, window);
     }
 
-    events_->setRowCount(static_cast<int>(events.size()));
-    for (int row = 0; row < static_cast<int>(events.size()); ++row) {
-      const auto &event = events[row];
-      const QStringList columns = {
-          DiagnosticsMonitorPanel::ageText(event.stamp, now),
-          qstr(DiagnosticModel::severityLabel(event.snapshot.level)),
-          qstr(event.snapshot.message),
-          valuesText(event.snapshot.values),
-      };
-      for (int col = 0; col < columns.size(); ++col) {
-        auto *item = new QTableWidgetItem(columns[col]);
-        item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-        item->setForeground(
-            QBrush(DiagnosticsMonitorPanel::colorFor(event.snapshot.level)));
-        events_->setItem(row, col, item);
+    if (paused_) {
+      return;
+    }
+
+    const auto rendered_events = newestRenderedEvents(events);
+    std::vector<std::string> signatures;
+    signatures.reserve(rendered_events.size());
+    for (const auto &event : rendered_events) {
+      signatures.push_back(std::to_string(event.sequence) + "|" +
+                           event.snapshot.id + "|" +
+                           std::to_string(static_cast<int>(event.snapshot.level)) +
+                           "|" + event.snapshot.message + "|" +
+                           str(valuesText(event.snapshot.values)));
+    }
+    if (signatures == event_row_signatures_) {
+      updateVisibleEventRowAges(events_, now);
+      return;
+    }
+    event_row_signatures_ = std::move(signatures);
+
+    const auto *selected_item = events_->currentItem();
+    const QString selected_signature =
+        selected_item == nullptr
+            ? QString{}
+            : selected_item->data(Qt::UserRole + 2).toString();
+    const auto selected_sequence =
+        selected_item == nullptr
+            ? std::optional<std::uint64_t>{}
+            : std::optional<std::uint64_t>{
+                  selected_item->data(kEventSequenceRole).toULongLong()};
+    const auto selected_stamp = selected_item == nullptr
+                                    ? std::optional<std::chrono::steady_clock::time_point>{}
+                                    : std::optional<std::chrono::steady_clock::time_point>{
+                                          std::chrono::steady_clock::time_point(
+                                              std::chrono::steady_clock::duration(
+                                                  selected_item->data(Qt::UserRole + 1)
+                                                      .toLongLong()))};
+    const auto scroll_position = events_->verticalScrollBar()->value();
+
+    events_->setUpdatesEnabled(false);
+    events_->clear();
+    int selected_row = -1;
+    for (int row = 0; row < static_cast<int>(rendered_events.size()); ++row) {
+      const auto &event = rendered_events[row];
+      auto *item = new QListWidgetItem;
+      const QString row_signature =
+          QString("%1|%2|%3|%4")
+              .arg(static_cast<qulonglong>(event.sequence))
+              .arg(qstr(event.snapshot.id))
+              .arg(static_cast<int>(event.snapshot.level))
+              .arg(qstr(event.snapshot.message));
+      item->setData(Qt::UserRole, row);
+      item->setData(
+          Qt::UserRole + 1,
+          static_cast<qlonglong>(event.stamp.time_since_epoch().count()));
+      item->setData(Qt::UserRole + 2, row_signature);
+      item->setData(Qt::UserRole + 3, "detail");
+      setEventItemRoles(item, event, now);
+      item->setFlags((item->flags() | Qt::ItemIsSelectable | Qt::ItemIsEnabled) &
+                     ~Qt::ItemIsEditable);
+      events_->addItem(item);
+      item->setText(detailEventItemText(event, now));
+      item->setForeground(QBrush(DiagnosticsMonitorPanel::colorFor(
+          event.snapshot.level)));
+      if (!selected_signature.isEmpty() && selected_signature == row_signature) {
+        selected_row = row;
+      }
+      if (selected_sequence && event.sequence == *selected_sequence) {
+        selected_row = row;
       }
     }
+    if (selected_row < 0 && events_->count() > 0) {
+      if (selected_stamp) {
+        selected_row = closestEventRow(rendered_events, *selected_stamp);
+      } else {
+        selected_row = 0;
+      }
+    }
+    if (selected_row >= 0) {
+      displayed_events_ = rendered_events;
+      events_->setCurrentRow(selected_row);
+      showEventDetail(selected_row);
+      if (pending_timeline_selection_) {
+        applyTimelineSelection(*pending_timeline_selection_);
+        pending_timeline_selection_.reset();
+      }
+    } else {
+      displayed_events_.clear();
+      showEventDetail(-1);
+    }
+    events_->verticalScrollBar()->setValue(scroll_position);
+    events_->setUpdatesEnabled(true);
   }
 
 private:
+  void updateSeverityBadge(Severity severity) {
+    const auto severity_color = DiagnosticsMonitorPanel::colorFor(severity);
+    severity_badge_->setText(qstr(DiagnosticModel::severityLabel(severity)));
+    severity_badge_->setStyleSheet(
+        QString("font-weight: 700; color: %1; border: 1px solid %1; "
+                "border-radius: 3px; padding: 1px 5px;")
+            .arg(severity_color.name()));
+  }
+
+  void showEventDetail(int row) {
+    if (row < 0 || row >= static_cast<int>(displayed_events_.size())) {
+      message_->clear();
+      values_->setRowCount(0);
+      timeline_->setSelectedStamp(std::nullopt);
+      return;
+    }
+    const auto &event = displayed_events_[row];
+    timeline_->setSelectedStamp(event.stamp);
+    message_->setText(qstr(event.snapshot.message));
+    values_->setRowCount(static_cast<int>(event.snapshot.values.size()));
+    for (int value_row = 0;
+         value_row < static_cast<int>(event.snapshot.values.size());
+         ++value_row) {
+      values_->setItem(value_row, 0,
+                       new QTableWidgetItem(
+                           qstr(event.snapshot.values[value_row].key)));
+      values_->setItem(value_row, 1,
+                       new QTableWidgetItem(
+                           qstr(event.snapshot.values[value_row].value)));
+    }
+  }
+
+  void selectClosestEvent(std::chrono::steady_clock::time_point stamp) {
+    pending_timeline_selection_ = stamp;
+    if (displayed_events_.empty()) {
+      return;
+    }
+    applyTimelineSelection(stamp);
+  }
+
+  void applyTimelineSelection(std::chrono::steady_clock::time_point stamp) {
+    const auto newest_stamp = displayed_events_.front().stamp;
+    const auto oldest_stamp = displayed_events_.back().stamp;
+    if (stamp > newest_stamp || stamp < oldest_stamp) {
+      return;
+    }
+
+    const int closest_row = closestEventRow(displayed_events_, stamp);
+    events_->setCurrentRow(closest_row);
+    events_->scrollToItem(events_->item(closest_row),
+                          QAbstractItemView::PositionAtCenter);
+  }
+
+  static int closestEventRow(
+      const std::vector<DiagnosticEvent> &events,
+      std::chrono::steady_clock::time_point stamp) {
+    int closest_row = 0;
+    auto closest_distance = events.front().stamp > stamp
+                                ? events.front().stamp - stamp
+                                : stamp - events.front().stamp;
+    for (int row = 1; row < static_cast<int>(events.size()); ++row) {
+      const auto distance = events[row].stamp > stamp
+                                ? events[row].stamp - stamp
+                                : stamp - events[row].stamp;
+      if (distance < closest_distance) {
+        closest_distance = distance;
+        closest_row = row;
+      }
+    }
+    return closest_row;
+  }
+
   std::string id_;
   QLabel *header_{nullptr};
+  QLabel *severity_badge_{nullptr};
+  QPushButton *pause_button_{nullptr};
   TimelineWidget *timeline_{nullptr};
+  QListWidget *events_{nullptr};
+  QLabel *message_{nullptr};
   QTableWidget *values_{nullptr};
-  QTableWidget *events_{nullptr};
+  bool paused_{false};
+  std::optional<DiagnosticSnapshot> last_snapshot_;
+  std::vector<HistorySample> last_history_;
+  std::vector<DiagnosticEvent> last_events_;
+  std::vector<DiagnosticEvent> displayed_events_;
+  std::chrono::steady_clock::time_point last_now_{};
+  std::chrono::milliseconds last_window_{std::chrono::minutes(10)};
+  std::vector<std::string> event_row_signatures_;
+  std::optional<std::chrono::steady_clock::time_point> pending_timeline_selection_;
 };
 
 class DiagnosticGroupDialog : public QDialog {
 public:
-  explicit DiagnosticGroupDialog(const QString &path, QWidget *parent = nullptr)
-      : QDialog(parent), path_(path) {
-    setAttribute(Qt::WA_DeleteOnClose);
+  explicit DiagnosticGroupDialog(
+      const QString &path, std::function<void(const std::string &)> open_detail,
+      QWidget *parent = nullptr)
+      : QDialog(parent), path_(path), open_detail_(std::move(open_detail)) {
     setWindowModality(Qt::NonModal);
     resize(760, 420);
 
@@ -299,8 +523,18 @@ public:
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(6);
 
-    header_ = new QLabel(this);
+    auto *header_row = new QWidget(this);
+    auto *header_layout = new QHBoxLayout(header_row);
+    header_layout->setContentsMargins(0, 0, 0, 0);
+    header_layout->setSpacing(6);
+    severity_badge_ =
+        severityBadge(Severity::Stale, "diagnostic_group_severity", header_row);
+    header_ = new QLabel(header_row);
+    header_->setObjectName("diagnostic_group_header");
     header_->setWordWrap(true);
+    header_layout->addWidget(severity_badge_);
+    header_layout->addWidget(header_, 1);
+
     diagnostics_ = new QTreeWidget(this);
     diagnostics_->setObjectName("diagnostic_group_values");
     diagnostics_->setHeaderLabels(
@@ -313,24 +547,45 @@ public:
     diagnostics_->setColumnWidth(3, 120);
     diagnostics_->setAlternatingRowColors(true);
 
-    layout->addWidget(header_);
+    timeline_ = new TimelineWidget(this);
+    timeline_->setObjectName("diagnostic_group_timeline");
+
+    layout->addWidget(header_row);
     layout->addWidget(diagnostics_, 1);
+    layout->addWidget(timeline_);
+
+    QObject::connect(diagnostics_, &QTreeWidget::itemDoubleClicked, this,
+                     [this](QTreeWidgetItem *item, int) {
+      if (item == nullptr || !open_detail_) {
+        return;
+      }
+      const auto id = str(item->data(0, Qt::UserRole).toString());
+      if (!id.empty()) {
+        QMetaObject::invokeMethod(parentWidget(), [callback = open_detail_, id]() {
+          if (callback) {
+            callback(id);
+          }
+        }, Qt::QueuedConnection);
+      }
+    });
   }
 
   const QString &path() const { return path_; }
 
   void refresh(const std::vector<DiagnosticSnapshot> &snapshots,
-               std::vector<HistorySample>,
+               std::vector<HistorySample> history,
                std::chrono::steady_clock::time_point now,
-               std::chrono::milliseconds) {
-    (void)now;
+               std::chrono::milliseconds window) {
     setWindowTitle(QString("%1 [%2 diagnostics]")
                        .arg(path_)
                        .arg(static_cast<int>(snapshots.size())));
     if (snapshots.empty()) {
-      header_->setText(QString("%1\nNo diagnostics currently match this group.")
-                           .arg(path_));
+      header_->setText(
+          QString("%1 diagnostics   No diagnostics currently match this group.")
+              .arg(0));
+      updateSeverityBadge(Severity::Stale);
       diagnostics_->clear();
+      timeline_->setSamples(std::move(history), now, window);
       return;
     }
 
@@ -338,13 +593,11 @@ public:
     for (const auto &snapshot : snapshots) {
       severity = DiagnosticModel::worst(severity, snapshot.level);
     }
-    header_->setText(QString("%1\n%2 diagnostics   Worst level: %3")
-                         .arg(path_)
-                         .arg(static_cast<int>(snapshots.size()))
-                         .arg(qstr(DiagnosticModel::severityLabel(severity))));
+    header_->setText(QString("%1 diagnostics")
+                         .arg(static_cast<int>(snapshots.size())));
     header_->setStyleSheet(QString("font-weight: 600; color: %1")
-                               .arg(DiagnosticsMonitorPanel::colorFor(severity)
-                                        .name()));
+                               .arg(palette().color(QPalette::Text).name()));
+    updateSeverityBadge(severity);
 
     diagnostics_->clear();
     for (const auto &snapshot : snapshots) {
@@ -356,18 +609,32 @@ public:
           valuesText(snapshot.values),
       };
       auto *item = new QTreeWidgetItem(diagnostics_, columns);
+      item->setData(0, Qt::UserRole, qstr(snapshot.id));
       for (int col = 0; col < columns.size(); ++col) {
         item->setFlags(item->flags() & ~Qt::ItemIsEditable);
         item->setForeground(
             col, QBrush(DiagnosticsMonitorPanel::colorFor(snapshot.level)));
       }
     }
+    timeline_->setSamples(std::move(history), now, window);
   }
 
 private:
+  void updateSeverityBadge(Severity severity) {
+    const auto severity_color = DiagnosticsMonitorPanel::colorFor(severity);
+    severity_badge_->setText(qstr(DiagnosticModel::severityLabel(severity)));
+    severity_badge_->setStyleSheet(
+        QString("font-weight: 700; color: %1; border: 1px solid %1; "
+                "border-radius: 3px; padding: 1px 5px;")
+            .arg(severity_color.name()));
+  }
+
   QString path_;
+  std::function<void(const std::string &)> open_detail_;
   QLabel *header_{nullptr};
+  QLabel *severity_badge_{nullptr};
   QTreeWidget *diagnostics_{nullptr};
+  TimelineWidget *timeline_{nullptr};
 };
 
 TimelineWidget::TimelineWidget(QWidget *parent) : QWidget(parent) {
@@ -383,11 +650,36 @@ void TimelineWidget::setSamples(std::vector<HistorySample> samples,
   update();
 }
 
+void TimelineWidget::setSelectedStamp(
+    std::optional<std::chrono::steady_clock::time_point> stamp) {
+  selected_stamp_ = stamp;
+  update();
+}
+
+void TimelineWidget::setClickCallback(
+    std::function<void(std::chrono::steady_clock::time_point)> callback) {
+  click_callback_ = std::move(callback);
+}
+
+void TimelineWidget::mousePressEvent(QMouseEvent *event) {
+  if (!click_callback_ || width() <= 1) {
+    return;
+  }
+
+  const auto clamped_x = std::clamp(event->pos().x(), 0, width() - 1);
+  const auto window = std::max(window_, std::chrono::milliseconds(1));
+  const auto offset =
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          window * clamped_x / std::max(1, width() - 1));
+  click_callback_(now_ - window + offset);
+}
+
 void TimelineWidget::paintEvent(QPaintEvent *) {
   QPainter painter(this);
-  painter.fillRect(rect(), QColor("#f3f4f6"));
+  const auto widget_palette = palette();
+  painter.fillRect(rect(), widget_palette.color(QPalette::Base));
   if (samples_.empty()) {
-    painter.setPen(QColor("#6b7280"));
+    painter.setPen(secondaryTextFor(widget_palette));
     painter.drawText(rect(), Qt::AlignCenter, "No history");
     return;
   }
@@ -405,9 +697,25 @@ void TimelineWidget::paintEvent(QPaintEvent *) {
     }
     const auto color = samples_[sample_index].stamp <= bucket_time
                            ? DiagnosticsMonitorPanel::colorFor(samples_[sample_index].level)
-                           : QColor("#9ca3af");
+                           : secondaryTextFor(widget_palette);
     painter.setPen(color);
     painter.drawLine(x, 0, x, height());
+  }
+
+  if (selected_stamp_) {
+    const auto start = now_ - window;
+    if (*selected_stamp_ >= start && *selected_stamp_ <= now_) {
+      const auto elapsed =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              *selected_stamp_ - start);
+      const auto x = static_cast<int>(
+          elapsed.count() * std::max(1, width() - 1) /
+          std::max<std::int64_t>(1, window.count()));
+      QPen pen(QColor("#2563eb"));
+      pen.setWidth(2);
+      painter.setPen(pen);
+      painter.drawLine(x, 0, x, height());
+    }
   }
 }
 
@@ -445,9 +753,6 @@ void DiagnosticsMonitorPanel::load(const rviz_common::Config &config) {
   if (config.mapGetInt("History Window Sec", &int_value)) {
     history_window_spin_->setValue(int_value);
   }
-  if (config.mapGetInt("Max Event Rows", &int_value)) {
-    max_events_spin_->setValue(int_value);
-  }
   if (config.mapGetBool("Show OK Events", &bool_value)) {
     event_ok_->setChecked(bool_value);
   }
@@ -460,6 +765,9 @@ void DiagnosticsMonitorPanel::load(const rviz_common::Config &config) {
   if (config.mapGetBool("Show STALE Events", &bool_value)) {
     event_stale_->setChecked(bool_value);
   }
+  if (config.mapGetBool("Wrap Event Feed", &bool_value)) {
+    event_wrap_->setChecked(bool_value);
+  }
 
   applySettingsFromControls();
   rebuildSubscriptionIfReady();
@@ -470,11 +778,11 @@ void DiagnosticsMonitorPanel::save(rviz_common::Config config) const {
   config.mapSetValue("Diagnostics Topic", topic_edit_->text());
   config.mapSetValue("Stale Timeout Ms", stale_timeout_spin_->value());
   config.mapSetValue("History Window Sec", history_window_spin_->value());
-  config.mapSetValue("Max Event Rows", max_events_spin_->value());
   config.mapSetValue("Show OK Events", event_ok_->isChecked());
   config.mapSetValue("Show WARN Events", event_warn_->isChecked());
   config.mapSetValue("Show ERROR Events", event_error_->isChecked());
   config.mapSetValue("Show STALE Events", event_stale_->isChecked());
+  config.mapSetValue("Wrap Event Feed", event_wrap_->isChecked());
 }
 
 void DiagnosticsMonitorPanel::initializeForTest(
@@ -550,6 +858,10 @@ QDialog *DiagnosticsMonitorPanel::groupDialogForTest(const QString &path) const 
   return it->second.data();
 }
 
+void DiagnosticsMonitorPanel::openGroupDialogForTest(const QString &path) {
+  openGroupDialog(path);
+}
+
 int DiagnosticsMonitorPanel::detailDialogCountForTest() const {
   int count = 0;
   for (const auto &[_, dialog] : detail_dialogs_) {
@@ -587,9 +899,6 @@ void DiagnosticsMonitorPanel::buildUi() {
   history_window_spin_->setRange(1, 86400);
   history_window_spin_->setValue(600);
   history_window_spin_->setSuffix(" s");
-  max_events_spin_ = new QSpinBox(this);
-  max_events_spin_->setRange(1, 100000);
-  max_events_spin_->setValue(5000);
 
   tabs_ = new QTabWidget(this);
   root->addWidget(tabs_, 1);
@@ -645,19 +954,32 @@ void DiagnosticsMonitorPanel::buildUi() {
                      [this]() { refreshEvents(); });
   }
   event_severity_layout->addStretch(1);
+  event_filter_layout->addWidget(event_severity_row);
+
+  auto *event_control_row = new QWidget(event_filters);
+  auto *event_control_layout = new QHBoxLayout(event_control_row);
+  event_control_layout->setContentsMargins(0, 0, 0, 0);
+  event_control_layout->setSpacing(6);
   event_pause_button_ = new QPushButton("Pause Feed", event_filters);
   event_pause_button_->setObjectName("event_feed_pause_button");
   event_pause_button_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-  event_severity_layout->addWidget(event_pause_button_);
-  event_filter_layout->addWidget(event_severity_row);
-  event_hardware_filter_ = new QLineEdit(event_filters);
-  event_hardware_filter_->setPlaceholderText("Hardware ID");
-  event_hardware_filter_->setMinimumWidth(0);
+  event_wrap_ = new QCheckBox("Wrap", event_filters);
+  event_wrap_->setObjectName("event_feed_wrap");
+  event_wrap_->setChecked(true);
+  event_control_layout->addWidget(event_pause_button_);
+  event_control_layout->addWidget(event_wrap_);
+  event_control_layout->addStretch(1);
+  event_filter_layout->addWidget(event_control_row);
+
+  auto *event_text_filter_row = new QWidget(event_filters);
+  auto *event_text_filter_layout = new QHBoxLayout(event_text_filter_row);
+  event_text_filter_layout->setContentsMargins(0, 0, 0, 0);
+  event_text_filter_layout->setSpacing(4);
   event_search_ = new QLineEdit(event_filters);
-  event_search_->setPlaceholderText("Search events");
+  event_search_->setPlaceholderText("Filter events");
   event_search_->setMinimumWidth(0);
-  event_filter_layout->addWidget(event_hardware_filter_);
-  event_filter_layout->addWidget(event_search_);
+  event_text_filter_layout->addWidget(event_search_, 1);
+  event_filter_layout->addWidget(event_text_filter_row);
   events_layout->addWidget(event_filters);
   event_list_ = new QListWidget(events);
   event_list_->setObjectName("diagnostic_event_feed");
@@ -665,18 +987,20 @@ void DiagnosticsMonitorPanel::buildUi() {
   event_list_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
   event_list_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
   event_list_->setSelectionMode(QAbstractItemView::SingleSelection);
-  event_list_->setUniformItemSizes(false);
-  event_list_->setSpacing(4);
+  event_list_->setUniformItemSizes(true);
+  event_list_->setWordWrap(event_wrap_->isChecked());
+  event_list_->setSpacing(0);
   event_list_->setFrameShape(QFrame::NoFrame);
   event_list_->setStyleSheet(
-      "QListWidget#diagnostic_event_feed::item { margin: 0; padding: 0; }");
+      "QListWidget#diagnostic_event_feed::item { margin: 0; padding: 2px 4px; }");
   events_layout->addWidget(event_list_, 1);
   tabs_->addTab(events, "Event Feed");
 
-  QObject::connect(event_hardware_filter_, &QLineEdit::textChanged, this,
-                   [this]() { refreshEvents(); });
   QObject::connect(event_search_, &QLineEdit::textChanged, this,
                    [this]() { refreshEvents(); });
+  QObject::connect(event_wrap_, &QCheckBox::toggled, this, [this]() {
+    event_list_->setWordWrap(event_wrap_->isChecked());
+  });
   QObject::connect(event_pause_button_, &QPushButton::clicked, this, [this]() {
     event_feed_paused_ = !event_feed_paused_;
     event_pause_button_->setText(event_feed_paused_ ? "Continue Feed"
@@ -718,15 +1042,13 @@ void DiagnosticsMonitorPanel::buildUi() {
   auto *history_layout = new QFormLayout(history_group);
   history_layout->addRow("Stale timeout", stale_timeout_spin_);
   history_layout->addRow("History window", history_window_spin_);
-  history_layout->addRow("Max event rows", max_events_spin_);
   settings_layout->addWidget(history_group);
   settings_layout->addStretch(1);
   tabs_->addTab(settings_page, "Settings");
 
   QObject::connect(apply_topic, &QPushButton::clicked, this,
                    [this]() { rebuildSubscriptionIfReady(); });
-  for (auto *spin : {stale_timeout_spin_, history_window_spin_,
-                     max_events_spin_}) {
+  for (auto *spin : {stale_timeout_spin_, history_window_spin_}) {
     QObject::connect(spin, qOverload<int>(&QSpinBox::valueChanged), this,
                      [this]() {
                        applySettingsFromControls();
@@ -739,7 +1061,6 @@ void DiagnosticsMonitorPanel::applySettingsFromControls() {
   DiagnosticModelConfig config;
   config.stale_timeout = std::chrono::milliseconds(stale_timeout_spin_->value());
   config.history_window = std::chrono::seconds(history_window_spin_->value());
-  config.max_event_rows = static_cast<std::size_t>(max_events_spin_->value());
   std::lock_guard<std::mutex> lock(mutex_);
   model_.setConfig(config);
 }
@@ -869,7 +1190,7 @@ void DiagnosticsMonitorPanel::refreshEvents() {
   filter.show_warn = event_warn_->isChecked();
   filter.show_error = event_error_->isChecked();
   filter.show_stale = event_stale_->isChecked();
-  filter.hardware_id = str(event_hardware_filter_->text());
+  filter.hardware_id = {};
   filter.search = str(event_search_->text());
 
   std::vector<DiagnosticEvent> events;
@@ -877,11 +1198,13 @@ void DiagnosticsMonitorPanel::refreshEvents() {
     std::lock_guard<std::mutex> lock(mutex_);
     events = model_.filteredEvents(filter);
   }
+  events = newestRenderedEvents(events);
 
   std::vector<std::string> signatures;
   signatures.reserve(events.size());
   for (const auto &event : events) {
-    signatures.push_back(event.snapshot.id + "|" +
+    signatures.push_back(std::to_string(event.sequence) + "|" +
+                         event.snapshot.id + "|" +
                          std::to_string(static_cast<int>(event.snapshot.level)) +
                          "|" + event.snapshot.name + "|" +
                          event.snapshot.hardware_id + "|" +
@@ -890,9 +1213,7 @@ void DiagnosticsMonitorPanel::refreshEvents() {
   }
   const auto now = std::chrono::steady_clock::now();
   if (signatures == event_row_signatures_) {
-    for (int row = 0; row < event_list_->count(); ++row) {
-      updateEventRowAge(event_list_->item(row), now);
-    }
+    updateVisibleEventRowAges(event_list_, now);
     return;
   }
   event_row_signatures_ = std::move(signatures);
@@ -911,12 +1232,14 @@ void DiagnosticsMonitorPanel::refreshEvents() {
     item->setData(
         Qt::UserRole + 1,
         static_cast<qlonglong>(event.stamp.time_since_epoch().count()));
+    item->setData(Qt::UserRole + 3, "main");
+    setEventItemRoles(item, event, now);
     item->setFlags((item->flags() | Qt::ItemIsSelectable | Qt::ItemIsEnabled) &
                    ~Qt::ItemIsEditable);
-    auto *row_widget = buildEventRow(event, now, event_list_);
     event_list_->addItem(item);
-    event_list_->setItemWidget(item, row_widget);
-    item->setSizeHint(row_widget->sizeHint());
+    item->setText(mainEventItemText(event, now));
+    item->setForeground(QBrush(DiagnosticsMonitorPanel::colorFor(
+        event.snapshot.level)));
     if (!selected_id.isEmpty() && selected_id == qstr(event.snapshot.id)) {
       event_list_->setCurrentItem(item);
     }
@@ -949,10 +1272,13 @@ void DiagnosticsMonitorPanel::refreshDetailDialogs() {
   }
 
   for (auto it = group_dialogs_.begin(); it != group_dialogs_.end();) {
-    if (it->second.isNull()) {
+    auto *dialog = it->second.data();
+    if (dialog == nullptr) {
       it = group_dialogs_.erase(it);
       continue;
     }
+    dialog->refresh(snapshotsForGroupPath(it->first), historyForGroupPath(it->first),
+                    now, window);
     ++it;
   }
 }
@@ -965,7 +1291,19 @@ void DiagnosticsMonitorPanel::openDetailDialog(const std::string &id) {
       detail_dialogs_.erase(id);
     });
   }
-  refreshDetailDialogs();
+
+  const auto now = std::chrono::steady_clock::now();
+  const auto window = std::chrono::seconds(history_window_spin_->value());
+  std::optional<DiagnosticSnapshot> snapshot;
+  std::vector<HistorySample> history;
+  std::vector<DiagnosticEvent> events;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    snapshot = model_.snapshot(id, now);
+    history = model_.historyFor(id);
+    events = model_.eventsForDiagnostic(id);
+  }
+  dialog->refresh(snapshot, std::move(history), events, now, window);
   dialog->show();
   dialog->raise();
   dialog->activateWindow();
@@ -974,7 +1312,8 @@ void DiagnosticsMonitorPanel::openDetailDialog(const std::string &id) {
 void DiagnosticsMonitorPanel::openGroupDialog(const QString &path) {
   auto &dialog = group_dialogs_[path];
   if (dialog.isNull()) {
-    dialog = new DiagnosticGroupDialog(path, this);
+    dialog = new DiagnosticGroupDialog(
+        path, [this](const std::string &id) { openDetailDialog(id); }, this);
     QObject::connect(dialog.data(), &QObject::destroyed, this, [this, path]() {
       group_dialogs_.erase(path);
     });

@@ -50,9 +50,6 @@ DiagnosticModel::DiagnosticModel() = default;
 
 void DiagnosticModel::setConfig(const DiagnosticModelConfig &config) {
   config_ = config;
-  if (config_.max_event_rows == 0) {
-    config_.max_event_rows = 1;
-  }
 }
 
 void DiagnosticModel::clear() {
@@ -60,6 +57,7 @@ void DiagnosticModel::clear() {
   events_.clear();
   overall_history_.clear();
   last_message_seen_.reset();
+  next_event_sequence_ = 1;
 }
 
 void DiagnosticModel::ingest(const diagnostic_msgs::msg::DiagnosticArray &message,
@@ -341,7 +339,7 @@ std::string DiagnosticModel::lower(std::string text) {
 
 void DiagnosticModel::appendEvent(const DiagnosticSnapshot &snapshot,
                                   std::chrono::steady_clock::time_point now) {
-  events_.push_back({now, snapshot});
+  events_.push_back({next_event_sequence_++, now, snapshot});
 }
 
 void DiagnosticModel::appendHistory(Entry &entry, Severity level,
@@ -370,12 +368,12 @@ void DiagnosticModel::prune(std::chrono::steady_clock::time_point now) {
     pruneHistory(entry.history, cutoff);
   }
   pruneHistory(overall_history_, cutoff);
-  if (events_.size() > config_.max_event_rows) {
-    events_.erase(events_.begin(),
-                  events_.begin() +
-                      static_cast<std::ptrdiff_t>(events_.size() -
-                                                  config_.max_event_rows));
-  }
+  const auto first_event_in_window =
+      std::lower_bound(events_.begin(), events_.end(), cutoff,
+                       [](const auto &event, const auto &time) {
+                         return event.stamp < time;
+                       });
+  events_.erase(events_.begin(), first_event_in_window);
 }
 
 bool DiagnosticModel::isMessageStreamStale(

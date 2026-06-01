@@ -44,6 +44,7 @@ struct HistorySample {
 };
 
 struct DiagnosticEvent {
+  std::uint64_t sequence{0};
   std::chrono::steady_clock::time_point stamp{};
   DiagnosticSnapshot snapshot;
 };
@@ -68,7 +69,6 @@ struct TreeNode {
 struct DiagnosticModelConfig {
   std::chrono::milliseconds stale_timeout{3000};
   std::chrono::milliseconds history_window{std::chrono::minutes(10)};
-  std::size_t max_event_rows{5000};
 };
 
 struct EventFilter {
@@ -144,6 +144,7 @@ private:
   std::vector<DiagnosticEvent> events_;
   std::vector<HistorySample> overall_history_;
   std::optional<std::chrono::steady_clock::time_point> last_message_seen_;
+  std::uint64_t next_event_sequence_{1};
 };
 
 } // namespace rviz2_diagnostics_monitor
