@@ -21,9 +21,10 @@ class QCheckBox;
 class QDialog;
 class QLabel;
 class QLineEdit;
+class QListWidget;
+class QPushButton;
 class QSpinBox;
 class QTabWidget;
-class QTableWidget;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -72,7 +73,7 @@ public:
   QDialog *detailDialogForTest(const std::string &id) const;
   QDialog *groupDialogForTest(const QString &path) const;
   int detailDialogCountForTest() const;
-  QTableWidget *eventFeedTableForTest() const;
+  QListWidget *eventFeedListForTest() const;
   std::vector<HistorySample> groupHistoryForTest(const QString &path);
 
   static QColor colorFor(Severity severity);
@@ -94,7 +95,6 @@ private:
   void configureOverviewTree(QTreeWidget *tree);
   void connectOverviewTree(QTreeWidget *tree);
   void setItemSeverity(QTreeWidgetItem *item, Severity severity);
-  void setRowSeverity(QTableWidget *table, int row, Severity severity);
   void rebuildSubscriptionIfReady();
   TreeNode treeForSnapshots(const std::vector<DiagnosticSnapshot> &snapshots) const;
   std::map<std::string, std::set<QString>> expandedItemPaths() const;
@@ -129,9 +129,11 @@ private:
   QCheckBox *event_warn_{nullptr};
   QCheckBox *event_error_{nullptr};
   QCheckBox *event_stale_{nullptr};
+  QPushButton *event_pause_button_{nullptr};
   QLineEdit *event_hardware_filter_{nullptr};
   QLineEdit *event_search_{nullptr};
-  QTableWidget *event_table_{nullptr};
+  QListWidget *event_list_{nullptr};
+  bool event_feed_paused_{false};
   std::map<std::string, std::vector<std::string>> overview_tree_signatures_;
   std::vector<std::string> event_row_signatures_;
 };

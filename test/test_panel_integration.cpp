@@ -5,9 +5,14 @@
 #include <cstdlib>
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QDialog>
+#include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
+#include <QListWidgetItem>
 #include <QMetaObject>
+#include <QPushButton>
 #include <QScrollBar>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -67,6 +72,39 @@ int childCountWithName(const QTreeWidgetItem *parent, const QString &name) {
     }
   }
   return count;
+}
+
+QString eventLabelText(QListWidget *list, int row, const QString &object_name) {
+  auto *item = list->item(row);
+  if (item == nullptr) {
+    return {};
+  }
+  auto *widget = list->itemWidget(item);
+  if (widget == nullptr) {
+    return {};
+  }
+  auto *label = widget->findChild<QLabel *>(object_name);
+  return label == nullptr ? QString{} : label->text();
+}
+
+QLineEdit *lineEditWithPlaceholder(QWidget *root, const QString &placeholder) {
+  const auto edits = root->findChildren<QLineEdit *>();
+  for (auto *edit : edits) {
+    if (edit->placeholderText() == placeholder) {
+      return edit;
+    }
+  }
+  return nullptr;
+}
+
+QCheckBox *checkBoxWithText(QWidget *root, const QString &text) {
+  const auto checks = root->findChildren<QCheckBox *>();
+  for (auto *check : checks) {
+    if (check->text() == text) {
+      return check;
+    }
+  }
+  return nullptr;
 }
 
 } // namespace
@@ -513,33 +551,37 @@ TEST(PanelIntegration, DoubleClickingDiagnosticOpensAndReusesDetailDialog) {
   QApplication::processEvents();
 }
 
-TEST(PanelIntegration, EventFeedShowsNameAndMessageAndOpensDetails) {
+TEST(PanelIntegration, EventFeedUsesTimelineRowsAndOpensDetails) {
   rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
 
   diagnostic_msgs::msg::DiagnosticArray message;
-  message.status = {
-      makeStatus("Drive/Motor", "motor",
-                 diagnostic_msgs::msg::DiagnosticStatus::ERROR,
-                 "Over temperature"),
-  };
+  auto status = makeStatus("Drive/Motor", "motor",
+                           diagnostic_msgs::msg::DiagnosticStatus::ERROR,
+                           "Over temperature");
+  diagnostic_msgs::msg::KeyValue value;
+  value.key = "temperature";
+  value.value = "91 C";
+  status.values.push_back(value);
+  message.status = {status};
   panel.ingestForTest(message);
   panel.refreshForTest();
 
-  auto *event_table = panel.eventFeedTableForTest();
-  ASSERT_NE(event_table, nullptr);
-  ASSERT_EQ(event_table->columnCount(), 2);
-  EXPECT_EQ(event_table->horizontalHeaderItem(0)->text(), "Name");
-  EXPECT_EQ(event_table->horizontalHeaderItem(1)->text(), "Message");
-  ASSERT_EQ(event_table->rowCount(), 1);
-  ASSERT_NE(event_table->item(0, 0), nullptr);
-  ASSERT_NE(event_table->item(0, 1), nullptr);
-  EXPECT_EQ(event_table->item(0, 0)->text(), "Drive/Motor");
-  EXPECT_EQ(event_table->item(0, 1)->text(), "Over temperature");
+  EXPECT_EQ(panel.findChild<QTableWidget *>("diagnostic_event_feed"), nullptr);
+  auto *event_list = panel.eventFeedListForTest();
+  ASSERT_NE(event_list, nullptr);
+  ASSERT_EQ(event_list->count(), 1);
+  EXPECT_NE(event_list->itemWidget(event_list->item(0)), nullptr);
+  EXPECT_EQ(eventLabelText(event_list, 0, "event_severity"), "ERROR");
+  EXPECT_TRUE(eventLabelText(event_list, 0, "event_age").contains("ago"));
+  EXPECT_EQ(eventLabelText(event_list, 0, "event_name"), "Drive/Motor");
+  EXPECT_EQ(eventLabelText(event_list, 0, "event_hardware"), "Hardware: motor");
+  EXPECT_EQ(eventLabelText(event_list, 0, "event_message"), "Over temperature");
+  EXPECT_EQ(eventLabelText(event_list, 0, "event_values"), "temperature=91 C");
 
   const std::string id = "Drive/Motor\nmotor";
   ASSERT_TRUE(QMetaObject::invokeMethod(
-      event_table, "itemDoubleClicked", Qt::DirectConnection,
-      Q_ARG(QTableWidgetItem *, event_table->item(0, 0))));
+      event_list, "itemDoubleClicked", Qt::DirectConnection,
+      Q_ARG(QListWidgetItem *, event_list->item(0))));
   QApplication::processEvents();
 
   auto *dialog = panel.detailDialogForTest(id);
@@ -547,6 +589,128 @@ TEST(PanelIntegration, EventFeedShowsNameAndMessageAndOpensDetails) {
   EXPECT_TRUE(dialog->windowTitle().contains("Drive/Motor [motor]"));
   dialog->hide();
   QApplication::processEvents();
+}
+
+TEST(PanelIntegration, EventFeedPreservesSelectionAndScrollWhenUnchanged) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+  panel.resize(420, 260);
+  panel.show();
+
+  diagnostic_msgs::msg::DiagnosticArray message;
+  for (int i = 0; i < 80; ++i) {
+    message.status.push_back(
+        makeStatus("Synthetic/Event " + std::to_string(i),
+                   "synthetic_" + std::to_string(i),
+                   diagnostic_msgs::msg::DiagnosticStatus::WARN, "Warm"));
+  }
+  panel.ingestForTest(message);
+  panel.refreshForTest();
+
+  auto *event_list = panel.eventFeedListForTest();
+  ASSERT_NE(event_list, nullptr);
+  const auto tabs = panel.findChildren<QTabWidget *>();
+  for (auto *tabs_widget : tabs) {
+    if (tabs_widget->count() > 1 && tabs_widget->tabText(1) == "Event Feed") {
+      tabs_widget->setCurrentIndex(1);
+    }
+  }
+  event_list->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+  event_list->setFixedHeight(140);
+  QApplication::processEvents();
+  ASSERT_EQ(event_list->count(), 80);
+  ASSERT_GT(event_list->verticalScrollBar()->maximum(), 0);
+
+  event_list->setCurrentRow(10);
+  const auto selected_id = event_list->currentItem()->data(Qt::UserRole).toString();
+  const auto expected_scroll = event_list->verticalScrollBar()->maximum() / 2;
+  event_list->verticalScrollBar()->setValue(expected_scroll);
+
+  panel.refreshForTest();
+
+  ASSERT_NE(event_list->currentItem(), nullptr);
+  EXPECT_EQ(event_list->currentItem()->data(Qt::UserRole).toString(), selected_id);
+  EXPECT_EQ(event_list->verticalScrollBar()->value(), expected_scroll);
+}
+
+TEST(PanelIntegration, EventFeedFiltersVisibleTimelineRows) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  diagnostic_msgs::msg::DiagnosticArray message;
+  message.status = {
+      makeStatus("Drive/Motor", "motor",
+                 diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Fault"),
+      makeStatus("Power/Battery", "battery",
+                 diagnostic_msgs::msg::DiagnosticStatus::WARN, "Low"),
+  };
+  panel.ingestForTest(message);
+  panel.refreshForTest();
+
+  auto *event_list = panel.eventFeedListForTest();
+  ASSERT_NE(event_list, nullptr);
+  ASSERT_EQ(event_list->count(), 2);
+
+  auto *hardware_filter = lineEditWithPlaceholder(&panel, "Hardware ID");
+  ASSERT_NE(hardware_filter, nullptr);
+  hardware_filter->setText("battery");
+  panel.refreshForTest();
+  ASSERT_EQ(event_list->count(), 1);
+  EXPECT_EQ(eventLabelText(event_list, 0, "event_name"), "Power/Battery");
+  hardware_filter->clear();
+
+  auto *event_search = lineEditWithPlaceholder(&panel, "Search events");
+  ASSERT_NE(event_search, nullptr);
+  event_search->setText("fault");
+  panel.refreshForTest();
+  ASSERT_EQ(event_list->count(), 1);
+  EXPECT_EQ(eventLabelText(event_list, 0, "event_name"), "Drive/Motor");
+  event_search->clear();
+
+  auto *error = checkBoxWithText(&panel, "ERROR");
+  ASSERT_NE(error, nullptr);
+  error->setChecked(false);
+  panel.refreshForTest();
+  ASSERT_EQ(event_list->count(), 1);
+  EXPECT_EQ(eventLabelText(event_list, 0, "event_severity"), "WARN");
+}
+
+TEST(PanelIntegration, EventFeedPauseFreezesAndContinueRefreshesRows) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  diagnostic_msgs::msg::DiagnosticArray initial;
+  initial.status = {
+      makeStatus("Drive/Motor", "motor",
+                 diagnostic_msgs::msg::DiagnosticStatus::WARN, "Warm"),
+  };
+  panel.ingestForTest(initial);
+  panel.refreshForTest();
+
+  auto *event_list = panel.eventFeedListForTest();
+  ASSERT_NE(event_list, nullptr);
+  ASSERT_EQ(event_list->count(), 1);
+  EXPECT_EQ(eventLabelText(event_list, 0, "event_message"), "Warm");
+
+  auto *pause = panel.findChild<QPushButton *>("event_feed_pause_button");
+  ASSERT_NE(pause, nullptr);
+  pause->click();
+  EXPECT_EQ(pause->text(), "Continue Feed");
+
+  diagnostic_msgs::msg::DiagnosticArray updated;
+  updated.status = {
+      makeStatus("Drive/Motor", "motor",
+                 diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Fault"),
+  };
+  panel.ingestForTest(updated);
+  panel.refreshForTest();
+
+  ASSERT_EQ(event_list->count(), 1);
+  EXPECT_EQ(eventLabelText(event_list, 0, "event_severity"), "WARN");
+  EXPECT_EQ(eventLabelText(event_list, 0, "event_message"), "Warm");
+
+  pause->click();
+  EXPECT_EQ(pause->text(), "Pause Feed");
+  ASSERT_GE(event_list->count(), 2);
+  EXPECT_EQ(eventLabelText(event_list, 0, "event_severity"), "ERROR");
+  EXPECT_EQ(eventLabelText(event_list, 0, "event_message"), "Fault");
 }
 
 int main(int argc, char **argv) {

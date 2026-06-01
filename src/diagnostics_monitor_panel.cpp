@@ -15,12 +15,15 @@
 #include <QCheckBox>
 #include <QDialog>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
+#include <QListWidgetItem>
 #include <QMetaObject>
 #include <QPainter>
 #include <QPushButton>
@@ -60,6 +63,125 @@ QString valuesText(const std::vector<DiagnosticValue> &values) {
     stream << values[i].key << "=" << values[i].value;
   }
   return qstr(stream.str());
+}
+
+QColor blend(const QColor &base, const QColor &accent, double accent_weight) {
+  const auto base_weight = 1.0 - accent_weight;
+  return QColor(
+      static_cast<int>(base.red() * base_weight + accent.red() * accent_weight),
+      static_cast<int>(base.green() * base_weight + accent.green() * accent_weight),
+      static_cast<int>(base.blue() * base_weight + accent.blue() * accent_weight));
+}
+
+QColor secondaryTextFor(const QPalette &palette) {
+  return blend(palette.color(QPalette::Text), palette.color(QPalette::Base),
+               0.38);
+}
+
+QLabel *eventLabel(const QString &text, const QString &object_name,
+                   QWidget *parent) {
+  auto *label = new QLabel(text, parent);
+  label->setObjectName(object_name);
+  label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  label->setWordWrap(true);
+  label->setMinimumWidth(0);
+  return label;
+}
+
+QWidget *buildEventRow(const DiagnosticEvent &event,
+                       std::chrono::steady_clock::time_point now,
+                       QWidget *parent) {
+  auto *row = new QWidget(parent);
+  row->setObjectName("diagnostic_event_row");
+  row->setMinimumWidth(0);
+  row->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
+  const auto row_palette = row->palette();
+  const auto severity_color = DiagnosticsMonitorPanel::colorFor(event.snapshot.level);
+  const auto row_text = row_palette.color(QPalette::Text);
+  const auto secondary_text = secondaryTextFor(row_palette);
+  row->setStyleSheet(
+      QString("#diagnostic_event_row {"
+              "border-left: 4px solid %1;"
+              "border-radius: 3px;"
+              "}")
+          .arg(severity_color.name()));
+
+  auto *layout = new QVBoxLayout(row);
+  layout->setContentsMargins(8, 6, 8, 6);
+  layout->setSpacing(3);
+
+  auto *top = new QWidget(row);
+  auto *top_layout = new QHBoxLayout(top);
+  top_layout->setContentsMargins(0, 0, 0, 0);
+  top_layout->setSpacing(6);
+
+  auto *severity = eventLabel(
+      qstr(DiagnosticModel::severityLabel(event.snapshot.level)),
+      "event_severity", top);
+  severity->setWordWrap(false);
+  severity->setAlignment(Qt::AlignCenter);
+  severity->setStyleSheet(
+      QString("font-weight: 700; color: %1; border: 1px solid %1; "
+              "border-radius: 3px; padding: 1px 5px;")
+          .arg(severity_color.name()));
+  severity->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+
+  auto *age = eventLabel(DiagnosticsMonitorPanel::ageText(event.stamp, now),
+                         "event_age", top);
+  age->setWordWrap(false);
+  age->setStyleSheet(QString("color: %1;").arg(secondary_text.name()));
+  age->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+
+  auto *name = eventLabel(qstr(event.snapshot.name), "event_name", top);
+  name->setWordWrap(false);
+  name->setStyleSheet(QString("font-weight: 600; color: %1;")
+                          .arg(row_text.name()));
+
+  top_layout->addWidget(severity);
+  top_layout->addWidget(age);
+  top_layout->addWidget(name, 1);
+  layout->addWidget(top);
+
+  auto *hardware =
+      eventLabel(QString("Hardware: %1")
+                     .arg(qstr(event.snapshot.hardware_id.empty()
+                                   ? std::string("-")
+                                   : event.snapshot.hardware_id)),
+                 "event_hardware", row);
+  hardware->setStyleSheet(QString("color: %1;").arg(secondary_text.name()));
+  layout->addWidget(hardware);
+
+  auto *message = eventLabel(qstr(event.snapshot.message), "event_message", row);
+  message->setStyleSheet(QString("color: %1;").arg(row_text.name()));
+  layout->addWidget(message);
+
+  if (!event.snapshot.values.empty()) {
+    auto *values = eventLabel(valuesText(event.snapshot.values), "event_values", row);
+    values->setStyleSheet(QString("color: %1;").arg(secondary_text.name()));
+    layout->addWidget(values);
+  }
+
+  return row;
+}
+
+void updateEventRowAge(QListWidgetItem *item,
+                       std::chrono::steady_clock::time_point now) {
+  if (item == nullptr || item->listWidget() == nullptr) {
+    return;
+  }
+  auto *row = item->listWidget()->itemWidget(item);
+  if (row == nullptr) {
+    return;
+  }
+  auto *age = row->findChild<QLabel *>("event_age");
+  if (age == nullptr) {
+    return;
+  }
+  const auto stamp =
+      std::chrono::steady_clock::time_point(
+          std::chrono::steady_clock::duration(
+              item->data(Qt::UserRole + 1).toLongLong()));
+  age->setText(DiagnosticsMonitorPanel::ageText(stamp, now));
 }
 
 } // namespace
@@ -438,8 +560,8 @@ int DiagnosticsMonitorPanel::detailDialogCountForTest() const {
   return count;
 }
 
-QTableWidget *DiagnosticsMonitorPanel::eventFeedTableForTest() const {
-  return event_table_;
+QListWidget *DiagnosticsMonitorPanel::eventFeedListForTest() const {
+  return event_list_;
 }
 
 std::vector<HistorySample>
@@ -523,6 +645,10 @@ void DiagnosticsMonitorPanel::buildUi() {
                      [this]() { refreshEvents(); });
   }
   event_severity_layout->addStretch(1);
+  event_pause_button_ = new QPushButton("Pause Feed", event_filters);
+  event_pause_button_->setObjectName("event_feed_pause_button");
+  event_pause_button_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+  event_severity_layout->addWidget(event_pause_button_);
   event_filter_layout->addWidget(event_severity_row);
   event_hardware_filter_ = new QLineEdit(event_filters);
   event_hardware_filter_->setPlaceholderText("Hardware ID");
@@ -533,34 +659,38 @@ void DiagnosticsMonitorPanel::buildUi() {
   event_filter_layout->addWidget(event_hardware_filter_);
   event_filter_layout->addWidget(event_search_);
   events_layout->addWidget(event_filters);
-  event_table_ = new QTableWidget(0, 2, events);
-  event_table_->setObjectName("diagnostic_event_feed");
-  event_table_->setHorizontalHeaderLabels({"Name", "Message"});
-  event_table_->setMinimumWidth(0);
-  event_table_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
-  event_table_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-  event_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-  event_table_->setSelectionMode(QAbstractItemView::SingleSelection);
-  event_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-  event_table_->verticalHeader()->setVisible(false);
-  event_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-  event_table_->horizontalHeader()->setStretchLastSection(true);
-  event_table_->setColumnWidth(0, 260);
-  event_table_->setColumnWidth(1, 420);
-  event_table_->setAlternatingRowColors(true);
-  events_layout->addWidget(event_table_, 1);
+  event_list_ = new QListWidget(events);
+  event_list_->setObjectName("diagnostic_event_feed");
+  event_list_->setMinimumWidth(0);
+  event_list_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+  event_list_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  event_list_->setSelectionMode(QAbstractItemView::SingleSelection);
+  event_list_->setUniformItemSizes(false);
+  event_list_->setSpacing(4);
+  event_list_->setFrameShape(QFrame::NoFrame);
+  event_list_->setStyleSheet(
+      "QListWidget#diagnostic_event_feed::item { margin: 0; padding: 0; }");
+  events_layout->addWidget(event_list_, 1);
   tabs_->addTab(events, "Event Feed");
 
   QObject::connect(event_hardware_filter_, &QLineEdit::textChanged, this,
                    [this]() { refreshEvents(); });
   QObject::connect(event_search_, &QLineEdit::textChanged, this,
                    [this]() { refreshEvents(); });
-  QObject::connect(event_table_, &QTableWidget::itemDoubleClicked, this,
-                   [this](QTableWidgetItem *item) {
-                     auto *id_item = event_table_->item(item->row(), 0);
-                     const auto id = id_item == nullptr
+  QObject::connect(event_pause_button_, &QPushButton::clicked, this, [this]() {
+    event_feed_paused_ = !event_feed_paused_;
+    event_pause_button_->setText(event_feed_paused_ ? "Continue Feed"
+                                                    : "Pause Feed");
+    if (!event_feed_paused_) {
+      event_row_signatures_.clear();
+      refreshEvents();
+    }
+  });
+  QObject::connect(event_list_, &QListWidget::itemDoubleClicked, this,
+                   [this](QListWidgetItem *item) {
+                     const auto id = item == nullptr
                                          ? std::string{}
-                                         : str(id_item->data(Qt::UserRole).toString());
+                                         : str(item->data(Qt::UserRole).toString());
                      if (!id.empty()) {
                        openDetailDialog(id);
                      }
@@ -730,6 +860,10 @@ void DiagnosticsMonitorPanel::refreshOverview(
 }
 
 void DiagnosticsMonitorPanel::refreshEvents() {
+  if (event_feed_paused_) {
+    return;
+  }
+
   EventFilter filter;
   filter.show_ok = event_ok_->isChecked();
   filter.show_warn = event_warn_->isChecked();
@@ -750,42 +884,45 @@ void DiagnosticsMonitorPanel::refreshEvents() {
     signatures.push_back(event.snapshot.id + "|" +
                          std::to_string(static_cast<int>(event.snapshot.level)) +
                          "|" + event.snapshot.name + "|" +
-                         event.snapshot.message);
+                         event.snapshot.hardware_id + "|" +
+                         event.snapshot.message + "|" +
+                         str(valuesText(event.snapshot.values)));
   }
+  const auto now = std::chrono::steady_clock::now();
   if (signatures == event_row_signatures_) {
+    for (int row = 0; row < event_list_->count(); ++row) {
+      updateEventRowAge(event_list_->item(row), now);
+    }
     return;
   }
   event_row_signatures_ = std::move(signatures);
 
-  const int selected_row = event_table_->currentRow();
+  const auto *selected_item = event_list_->currentItem();
   const QString selected_id =
-      selected_row >= 0 && event_table_->item(selected_row, 0) != nullptr
-          ? event_table_->item(selected_row, 0)->data(Qt::UserRole).toString()
-          : QString{};
-  const auto scroll_position = event_table_->verticalScrollBar()->value();
+      selected_item == nullptr ? QString{} : selected_item->data(Qt::UserRole).toString();
+  const auto scroll_position = event_list_->verticalScrollBar()->value();
 
-  event_table_->setUpdatesEnabled(false);
-  event_table_->setRowCount(static_cast<int>(events.size()));
+  event_list_->setUpdatesEnabled(false);
+  event_list_->clear();
   for (int row = 0; row < static_cast<int>(events.size()); ++row) {
     const auto &event = events[row];
-    const QStringList columns = {
-        qstr(event.snapshot.name),
-        qstr(event.snapshot.message),
-    };
-    for (int col = 0; col < columns.size(); ++col) {
-      auto *item = new QTableWidgetItem(columns[col]);
-      item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-      item->setData(Qt::UserRole, qstr(event.snapshot.id));
-      event_table_->setItem(row, col, item);
-    }
-    setRowSeverity(event_table_, row, event.snapshot.level);
+    auto *item = new QListWidgetItem;
+    item->setData(Qt::UserRole, qstr(event.snapshot.id));
+    item->setData(
+        Qt::UserRole + 1,
+        static_cast<qlonglong>(event.stamp.time_since_epoch().count()));
+    item->setFlags((item->flags() | Qt::ItemIsSelectable | Qt::ItemIsEnabled) &
+                   ~Qt::ItemIsEditable);
+    auto *row_widget = buildEventRow(event, now, event_list_);
+    event_list_->addItem(item);
+    event_list_->setItemWidget(item, row_widget);
+    item->setSizeHint(row_widget->sizeHint());
     if (!selected_id.isEmpty() && selected_id == qstr(event.snapshot.id)) {
-      event_table_->setCurrentCell(row, 0, QItemSelectionModel::ClearAndSelect |
-                                               QItemSelectionModel::Rows);
+      event_list_->setCurrentItem(item);
     }
   }
-  event_table_->verticalScrollBar()->setValue(scroll_position);
-  event_table_->setUpdatesEnabled(true);
+  event_list_->verticalScrollBar()->setValue(scroll_position);
+  event_list_->setUpdatesEnabled(true);
 }
 
 void DiagnosticsMonitorPanel::refreshDetailDialogs() {
@@ -891,16 +1028,6 @@ void DiagnosticsMonitorPanel::setItemSeverity(QTreeWidgetItem *item,
   const auto color = colorFor(severity);
   for (int col = 0; col < item->columnCount(); ++col) {
     item->setForeground(col, QBrush(color));
-  }
-}
-
-void DiagnosticsMonitorPanel::setRowSeverity(QTableWidget *table, int row,
-                                             Severity severity) {
-  const auto color = colorFor(severity);
-  for (int col = 0; col < table->columnCount(); ++col) {
-    if (auto *item = table->item(row, col)) {
-      item->setForeground(QBrush(color));
-    }
   }
 }
 
