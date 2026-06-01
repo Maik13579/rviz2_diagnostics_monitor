@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
+#include <regex>
 #include <sstream>
 #include <unordered_set>
 
@@ -44,6 +46,16 @@ void pruneHistory(std::vector<HistorySample> &history,
     return;
   }
   history.erase(history.begin(), first_in_window - 1);
+}
+
+void pruneValueHistory(std::vector<ValueHistorySample> &history,
+                       std::chrono::steady_clock::time_point cutoff) {
+  const auto first_in_window =
+      std::lower_bound(history.begin(), history.end(), cutoff,
+                       [](const auto &sample, const auto &time) {
+                         return sample.stamp < time;
+                       });
+  history.erase(history.begin(), first_in_window);
 }
 
 DiagnosticModel::DiagnosticModel() = default;
@@ -102,6 +114,7 @@ void DiagnosticModel::ingest(const diagnostic_msgs::msg::DiagnosticArray &messag
     entry.state_signature = signature;
     entry.stale_event_emitted = snapshot.level == Severity::Stale;
     appendHistory(entry, snapshot.level, now);
+    appendValueHistory(entry, snapshot, now);
     if (changed) {
       appendEvent(snapshot, now);
     }
@@ -254,6 +267,45 @@ std::vector<HistorySample> DiagnosticModel::historyFor(
   return it->second.history;
 }
 
+std::vector<ValueHistorySample> DiagnosticModel::valueHistoryFor(
+    const std::string &id, const std::string &key) const {
+  const auto entry_it = entries_.find(id);
+  if (entry_it == entries_.end()) {
+    return {};
+  }
+  const auto history_it = entry_it->second.value_histories.find(key);
+  if (history_it == entry_it->second.value_histories.end()) {
+    return {};
+  }
+  return history_it->second;
+}
+
+std::optional<double>
+DiagnosticModel::parseNumericValue(const std::string &value) {
+  static const std::regex numeric_prefix(
+      R"(^\s*[+-]?(?:(?:\d+\.?\d*)|(?:\.\d+))(?:[eE][+-]?\d+)?)");
+  std::smatch match;
+  if (!std::regex_search(value, match, numeric_prefix)) {
+    return std::nullopt;
+  }
+
+  const auto text = match.str();
+  const auto next = value.begin() + static_cast<std::ptrdiff_t>(match.length());
+  const auto trimmed_start = std::find_if_not(
+      value.begin(), value.end(), [](unsigned char c) { return std::isspace(c); });
+  if (next != value.end() && (*next == 'x' || *next == 'X') &&
+      trimmed_start != value.end() && *trimmed_start == '0') {
+    return std::nullopt;
+  }
+
+  char *end = nullptr;
+  const double parsed = std::strtod(text.c_str(), &end);
+  if (end == text.c_str()) {
+    return std::nullopt;
+  }
+  return parsed;
+}
+
 std::vector<std::string>
 DiagnosticModel::splitDiagnosticName(const std::string &name) {
   std::vector<std::string> parts;
@@ -350,6 +402,19 @@ void DiagnosticModel::appendHistory(Entry &entry, Severity level,
   entry.history.push_back({now, level});
 }
 
+void DiagnosticModel::appendValueHistory(
+    Entry &entry, const DiagnosticSnapshot &snapshot,
+    std::chrono::steady_clock::time_point now) {
+  for (const auto &diagnostic_value : snapshot.values) {
+    const auto parsed = parseNumericValue(diagnostic_value.value);
+    if (!parsed) {
+      continue;
+    }
+    entry.value_histories[diagnostic_value.key].push_back(
+        {now, *parsed, snapshot.level, diagnostic_value.value});
+  }
+}
+
 void DiagnosticModel::appendOverallHistory(
     std::chrono::steady_clock::time_point now) {
   Severity severity = Severity::Ok;
@@ -366,6 +431,15 @@ void DiagnosticModel::prune(std::chrono::steady_clock::time_point now) {
   const auto cutoff = now - config_.history_window;
   for (auto &[_, entry] : entries_) {
     pruneHistory(entry.history, cutoff);
+    for (auto history_it = entry.value_histories.begin();
+         history_it != entry.value_histories.end();) {
+      pruneValueHistory(history_it->second, cutoff);
+      if (history_it->second.empty()) {
+        history_it = entry.value_histories.erase(history_it);
+      } else {
+        ++history_it;
+      }
+    }
   }
   pruneHistory(overall_history_, cutoff);
   const auto first_event_in_window =

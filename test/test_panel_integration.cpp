@@ -7,6 +7,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QDialog>
+#include <QDoubleSpinBox>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -635,12 +636,144 @@ TEST(PanelIntegration, DetailPopupUsesCompactSelectableEventFeed) {
   ASSERT_EQ(values->rowCount(), 1);
   EXPECT_EQ(values->item(0, 0)->text(), "temperature");
   EXPECT_EQ(values->item(0, 1)->text(), "91 C");
+  EXPECT_EQ(values->columnCount(), 3);
 
   detail_events->setCurrentRow(1);
   EXPECT_EQ(message->text(), "Warm");
   ASSERT_EQ(values->rowCount(), 1);
   EXPECT_EQ(values->item(0, 1)->text(), "72 C");
   dialog->hide();
+}
+
+TEST(PanelIntegration, DetailPopupShowsPlotButtonOnlyForNumericValues) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  diagnostic_msgs::msg::DiagnosticArray message;
+  auto status = makeStatus("Drive/Motor", "motor",
+                           diagnostic_msgs::msg::DiagnosticStatus::WARN, "Warm");
+  addValue(status, "temperature", "72 C");
+  addValue(status, "state", "warm");
+  message.status = {status};
+  panel.ingestForTest(message);
+  panel.refreshForTest();
+
+  auto *event_list = panel.eventFeedListForTest();
+  ASSERT_NE(event_list, nullptr);
+  ASSERT_TRUE(QMetaObject::invokeMethod(
+      event_list, "itemDoubleClicked", Qt::DirectConnection,
+      Q_ARG(QListWidgetItem *, event_list->item(0))));
+  QApplication::processEvents();
+
+  auto *dialog = panel.detailDialogForTest("Drive/Motor\nmotor");
+  ASSERT_NE(dialog, nullptr);
+  auto *values = dialog->findChild<QTableWidget *>("diagnostic_detail_values");
+  ASSERT_NE(values, nullptr);
+  ASSERT_EQ(values->rowCount(), 2);
+  ASSERT_EQ(values->columnCount(), 3);
+  EXPECT_NE(values->cellWidget(0, 2), nullptr);
+  EXPECT_EQ(values->cellWidget(1, 2), nullptr);
+  dialog->hide();
+}
+
+TEST(PanelIntegration, PlotButtonOpensReusableValuePlotDialogAndRefreshes) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  diagnostic_msgs::msg::DiagnosticArray initial;
+  auto warm = makeStatus("Drive/Motor", "motor",
+                         diagnostic_msgs::msg::DiagnosticStatus::WARN, "Warm");
+  addValue(warm, "temperature", "72 C");
+  initial.status = {warm};
+  panel.ingestForTest(initial);
+  panel.refreshForTest();
+
+  auto *event_list = panel.eventFeedListForTest();
+  ASSERT_NE(event_list, nullptr);
+  ASSERT_TRUE(QMetaObject::invokeMethod(
+      event_list, "itemDoubleClicked", Qt::DirectConnection,
+      Q_ARG(QListWidgetItem *, event_list->item(0))));
+  QApplication::processEvents();
+
+  const std::string id = "Drive/Motor\nmotor";
+  auto *detail = panel.detailDialogForTest(id);
+  ASSERT_NE(detail, nullptr);
+  auto *values = detail->findChild<QTableWidget *>("diagnostic_detail_values");
+  ASSERT_NE(values, nullptr);
+  auto *button = qobject_cast<QPushButton *>(values->cellWidget(0, 2));
+  ASSERT_NE(button, nullptr);
+  button->click();
+  QApplication::processEvents();
+
+  auto *plot = panel.valuePlotDialogForTest(id, "temperature");
+  ASSERT_NE(plot, nullptr);
+  EXPECT_TRUE(plot->windowTitle().contains("Drive/Motor / temperature"));
+  auto *header = plot->findChild<QLabel *>("diagnostic_value_plot_header");
+  ASSERT_NE(header, nullptr);
+  EXPECT_TRUE(header->text().contains("Samples: 1"));
+
+  button->click();
+  QApplication::processEvents();
+  EXPECT_EQ(panel.valuePlotDialogForTest(id, "temperature"), plot);
+
+  diagnostic_msgs::msg::DiagnosticArray updated;
+  auto fault = makeStatus("Drive/Motor", "motor",
+                          diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Fault");
+  addValue(fault, "temperature", "91 C");
+  updated.status = {fault};
+  panel.ingestForTest(updated);
+  panel.refreshForTest();
+
+  EXPECT_TRUE(header->text().contains("Current: 91 C"));
+  EXPECT_TRUE(header->text().contains("Samples: 2"));
+  plot->hide();
+  detail->hide();
+}
+
+TEST(PanelIntegration, ValuePlotAutoScaleControlsToggleManualRange) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  diagnostic_msgs::msg::DiagnosticArray message;
+  auto status = makeStatus("Drive/Motor", "motor",
+                           diagnostic_msgs::msg::DiagnosticStatus::WARN, "Warm");
+  addValue(status, "temperature", "72 C");
+  message.status = {status};
+  panel.ingestForTest(message);
+  panel.refreshForTest();
+
+  auto *event_list = panel.eventFeedListForTest();
+  ASSERT_NE(event_list, nullptr);
+  ASSERT_TRUE(QMetaObject::invokeMethod(
+      event_list, "itemDoubleClicked", Qt::DirectConnection,
+      Q_ARG(QListWidgetItem *, event_list->item(0))));
+  QApplication::processEvents();
+
+  const std::string id = "Drive/Motor\nmotor";
+  auto *detail = panel.detailDialogForTest(id);
+  ASSERT_NE(detail, nullptr);
+  auto *values = detail->findChild<QTableWidget *>("diagnostic_detail_values");
+  ASSERT_NE(values, nullptr);
+  auto *button = qobject_cast<QPushButton *>(values->cellWidget(0, 2));
+  ASSERT_NE(button, nullptr);
+  button->click();
+  QApplication::processEvents();
+
+  auto *plot = panel.valuePlotDialogForTest(id, "temperature");
+  ASSERT_NE(plot, nullptr);
+  auto *auto_scale =
+      plot->findChild<QCheckBox *>("diagnostic_value_plot_auto_scale");
+  auto *min_spin = plot->findChild<QDoubleSpinBox *>("diagnostic_value_plot_min");
+  auto *max_spin = plot->findChild<QDoubleSpinBox *>("diagnostic_value_plot_max");
+  ASSERT_NE(auto_scale, nullptr);
+  ASSERT_NE(min_spin, nullptr);
+  ASSERT_NE(max_spin, nullptr);
+
+  EXPECT_TRUE(auto_scale->isChecked());
+  EXPECT_FALSE(min_spin->isEnabled());
+  EXPECT_FALSE(max_spin->isEnabled());
+  auto_scale->setChecked(false);
+  EXPECT_TRUE(min_spin->isEnabled());
+  EXPECT_TRUE(max_spin->isEnabled());
+  plot->hide();
+  detail->hide();
 }
 
 TEST(PanelIntegration, DetailPopupPauseFreezesEventFeedAndContinuesToNewest) {

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -16,6 +17,7 @@
 #include <QBrush>
 #include <QCheckBox>
 #include <QDialog>
+#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGroupBox>
@@ -207,12 +209,129 @@ std::vector<DiagnosticEvent> newestRenderedEvents(
   return events;
 }
 
+std::string valuePlotDialogKey(const std::string &id, const std::string &key) {
+  return id + "\x1f" + key;
+}
+
 } // namespace
+
+class DiagnosticValuePlotDialog : public QDialog {
+public:
+  explicit DiagnosticValuePlotDialog(const std::string &id, const std::string &key,
+                                     QWidget *parent = nullptr)
+      : QDialog(parent), id_(id), key_(key) {
+    setWindowModality(Qt::NonModal);
+    resize(620, 380);
+
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+
+    header_ = new QLabel(this);
+    header_->setObjectName("diagnostic_value_plot_header");
+    header_->setWordWrap(true);
+    header_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    auto *controls = new QWidget(this);
+    auto *control_layout = new QHBoxLayout(controls);
+    control_layout->setContentsMargins(0, 0, 0, 0);
+    control_layout->setSpacing(6);
+    auto_scale_ = new QCheckBox("Auto scale", controls);
+    auto_scale_->setObjectName("diagnostic_value_plot_auto_scale");
+    auto_scale_->setChecked(true);
+    min_spin_ = new QDoubleSpinBox(controls);
+    min_spin_->setObjectName("diagnostic_value_plot_min");
+    min_spin_->setRange(-1000000000.0, 1000000000.0);
+    min_spin_->setDecimals(3);
+    max_spin_ = new QDoubleSpinBox(controls);
+    max_spin_->setObjectName("diagnostic_value_plot_max");
+    max_spin_->setRange(-1000000000.0, 1000000000.0);
+    max_spin_->setDecimals(3);
+    min_spin_->setEnabled(false);
+    max_spin_->setEnabled(false);
+    control_layout->addWidget(auto_scale_);
+    control_layout->addWidget(new QLabel("Min", controls));
+    control_layout->addWidget(min_spin_);
+    control_layout->addWidget(new QLabel("Max", controls));
+    control_layout->addWidget(max_spin_);
+    control_layout->addStretch(1);
+
+    plot_ = new ValuePlotWidget(this);
+    plot_->setObjectName("diagnostic_value_plot_widget");
+
+    layout->addWidget(header_);
+    layout->addWidget(controls);
+    layout->addWidget(plot_, 1);
+
+    QObject::connect(auto_scale_, &QCheckBox::toggled, this,
+                     [this](bool checked) {
+      min_spin_->setEnabled(!checked);
+      max_spin_->setEnabled(!checked);
+      plot_->setAutoScale(checked);
+    });
+    QObject::connect(min_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                     this, [this](double) { updateManualRange(); });
+    QObject::connect(max_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                     this, [this](double) { updateManualRange(); });
+  }
+
+  const std::string &id() const { return id_; }
+  const std::string &key() const { return key_; }
+
+  void refresh(const std::optional<DiagnosticSnapshot> &snapshot,
+               std::vector<ValueHistorySample> samples,
+               std::chrono::steady_clock::time_point now,
+               std::chrono::milliseconds window) {
+    const auto title_name = snapshot ? snapshot->name : id_;
+    setWindowTitle(qstr(title_name + " / " + key_));
+
+    QString current = "-";
+    if (!samples.empty()) {
+      current = qstr(samples.back().raw_value);
+    }
+    header_->setText(QString("Current: %1   Samples: %2")
+                         .arg(current)
+                         .arg(static_cast<int>(samples.size())));
+
+    if (!samples.empty() && auto_scale_->isChecked()) {
+      auto [minmax_min, minmax_max] = std::minmax_element(
+          samples.begin(), samples.end(), [](const auto &left, const auto &right) {
+            return left.value < right.value;
+          });
+      min_spin_->blockSignals(true);
+      max_spin_->blockSignals(true);
+      min_spin_->setValue(minmax_min->value);
+      max_spin_->setValue(minmax_max->value);
+      min_spin_->blockSignals(false);
+      max_spin_->blockSignals(false);
+    }
+
+    plot_->setAutoScale(auto_scale_->isChecked());
+    updateManualRange();
+    plot_->setSamples(std::move(samples), now, window);
+  }
+
+private:
+  void updateManualRange() {
+    plot_->setManualRange(min_spin_->value(), max_spin_->value());
+  }
+
+  std::string id_;
+  std::string key_;
+  QLabel *header_{nullptr};
+  QCheckBox *auto_scale_{nullptr};
+  QDoubleSpinBox *min_spin_{nullptr};
+  QDoubleSpinBox *max_spin_{nullptr};
+  ValuePlotWidget *plot_{nullptr};
+};
 
 class DiagnosticDetailDialog : public QDialog {
 public:
-  explicit DiagnosticDetailDialog(const std::string &id, QWidget *parent = nullptr)
-      : QDialog(parent), id_(id) {
+  explicit DiagnosticDetailDialog(
+      const std::string &id,
+      std::function<void(const std::string &, const std::string &)> open_plot,
+      QWidget *parent = nullptr)
+      : QDialog(parent), id_(id), open_plot_(std::move(open_plot)) {
     setWindowModality(Qt::NonModal);
     resize(620, 520);
 
@@ -259,10 +378,11 @@ public:
     message_->setWordWrap(true);
     message_->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
-    values_ = new QTableWidget(0, 2, this);
+    values_ = new QTableWidget(0, 3, this);
     values_->setObjectName("diagnostic_detail_values");
-    values_->setHorizontalHeaderLabels({"Key", "Value"});
+    values_->setHorizontalHeaderLabels({"Key", "Value", "Plot"});
     values_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    values_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     values_->setAlternatingRowColors(true);
 
     layout->addWidget(header_row);
@@ -454,6 +574,7 @@ private:
     const auto &event = displayed_events_[row];
     timeline_->setSelectedStamp(event.stamp);
     message_->setText(qstr(event.snapshot.message));
+    values_->clearContents();
     values_->setRowCount(static_cast<int>(event.snapshot.values.size()));
     for (int value_row = 0;
          value_row < static_cast<int>(event.snapshot.values.size());
@@ -464,6 +585,20 @@ private:
       values_->setItem(value_row, 1,
                        new QTableWidgetItem(
                            qstr(event.snapshot.values[value_row].value)));
+      const auto key = event.snapshot.values[value_row].key;
+      if (DiagnosticModel::parseNumericValue(
+              event.snapshot.values[value_row].value)) {
+        auto *button = new QPushButton("Plot", values_);
+        button->setObjectName("diagnostic_value_plot_button");
+        button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        QObject::connect(button, &QPushButton::clicked, this,
+                         [this, key]() {
+          if (open_plot_) {
+            open_plot_(id_, key);
+          }
+        });
+        values_->setCellWidget(value_row, 2, button);
+      }
     }
   }
 
@@ -509,6 +644,7 @@ private:
   }
 
   std::string id_;
+  std::function<void(const std::string &, const std::string &)> open_plot_;
   QLabel *header_{nullptr};
   QLabel *severity_badge_{nullptr};
   QPushButton *pause_button_{nullptr};
@@ -737,6 +873,115 @@ void TimelineWidget::paintEvent(QPaintEvent *) {
   }
 }
 
+ValuePlotWidget::ValuePlotWidget(QWidget *parent) : QWidget(parent) {
+  setMinimumHeight(220);
+  setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+}
+
+void ValuePlotWidget::setSamples(std::vector<ValueHistorySample> samples,
+                                 std::chrono::steady_clock::time_point now,
+                                 std::chrono::milliseconds window) {
+  samples_ = std::move(samples);
+  now_ = now;
+  window_ = window;
+  update();
+}
+
+void ValuePlotWidget::setAutoScale(bool auto_scale) {
+  auto_scale_ = auto_scale;
+  update();
+}
+
+void ValuePlotWidget::setManualRange(double min_value, double max_value) {
+  manual_min_ = min_value;
+  manual_max_ = max_value;
+  update();
+}
+
+void ValuePlotWidget::paintEvent(QPaintEvent *) {
+  QPainter painter(this);
+  const auto widget_palette = palette();
+  painter.fillRect(rect(), widget_palette.color(QPalette::Base));
+
+  if (samples_.empty()) {
+    painter.setPen(secondaryTextFor(widget_palette));
+    painter.drawText(rect(), Qt::AlignCenter, "No numeric history");
+    return;
+  }
+
+  const QRect plot_rect = rect().adjusted(42, 10, -10, -24);
+  if (plot_rect.width() < 2 || plot_rect.height() < 2) {
+    return;
+  }
+
+  double min_value = auto_scale_ ? samples_.front().value : manual_min_;
+  double max_value = auto_scale_ ? samples_.front().value : manual_max_;
+  if (auto_scale_) {
+    for (const auto &sample : samples_) {
+      min_value = std::min(min_value, sample.value);
+      max_value = std::max(max_value, sample.value);
+    }
+  }
+  if (max_value <= min_value) {
+    const auto padding = std::max(1.0, std::abs(max_value) * 0.05);
+    min_value -= padding;
+    max_value += padding;
+  } else if (auto_scale_) {
+    const auto padding = (max_value - min_value) * 0.08;
+    min_value -= padding;
+    max_value += padding;
+  }
+
+  QPen grid_pen(secondaryTextFor(widget_palette));
+  grid_pen.setStyle(Qt::DotLine);
+  painter.setPen(grid_pen);
+  painter.drawRect(plot_rect);
+  for (int i = 1; i < 4; ++i) {
+    const int y = plot_rect.top() + plot_rect.height() * i / 4;
+    painter.drawLine(plot_rect.left(), y, plot_rect.right(), y);
+  }
+
+  painter.setPen(secondaryTextFor(widget_palette));
+  painter.drawText(QRect(0, plot_rect.top() - 2, 38, 16),
+                   Qt::AlignRight | Qt::AlignVCenter,
+                   QString::number(max_value, 'g', 4));
+  painter.drawText(QRect(0, plot_rect.bottom() - 14, 38, 16),
+                   Qt::AlignRight | Qt::AlignVCenter,
+                   QString::number(min_value, 'g', 4));
+  painter.drawText(QRect(plot_rect.left(), plot_rect.bottom() + 4,
+                         plot_rect.width(), 18),
+                   Qt::AlignCenter, "history window");
+
+  const auto window = std::max(window_, std::chrono::milliseconds(1));
+  const auto start = now_ - window;
+  const auto to_point = [&](const ValueHistorySample &sample) {
+    const auto clamped_stamp = std::clamp(sample.stamp, start, now_);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        clamped_stamp - start);
+    const auto x = plot_rect.left() +
+                   static_cast<int>(elapsed.count() * plot_rect.width() /
+                                    std::max<std::int64_t>(1, window.count()));
+    const auto normalized = (sample.value - min_value) / (max_value - min_value);
+    const auto y = plot_rect.bottom() -
+                   static_cast<int>(std::clamp(normalized, 0.0, 1.0) *
+                                    plot_rect.height());
+    return QPoint(x, y);
+  };
+
+  for (std::size_t i = 1; i < samples_.size(); ++i) {
+    QPen pen(DiagnosticsMonitorPanel::colorFor(samples_[i].severity));
+    pen.setWidth(2);
+    painter.setPen(pen);
+    painter.drawLine(to_point(samples_[i - 1]), to_point(samples_[i]));
+  }
+
+  for (const auto &sample : samples_) {
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(DiagnosticsMonitorPanel::colorFor(sample.severity));
+    painter.drawEllipse(to_point(sample), 3, 3);
+  }
+}
+
 DiagnosticsMonitorPanel::DiagnosticsMonitorPanel(QWidget *parent)
     : rviz_common::Panel(parent) {
   buildUi();
@@ -863,6 +1108,15 @@ QLineEdit *DiagnosticsMonitorPanel::overviewSearchForTest() const {
 QDialog *DiagnosticsMonitorPanel::detailDialogForTest(const std::string &id) const {
   const auto it = detail_dialogs_.find(id);
   if (it == detail_dialogs_.end()) {
+    return nullptr;
+  }
+  return it->second.data();
+}
+
+QDialog *DiagnosticsMonitorPanel::valuePlotDialogForTest(
+    const std::string &id, const std::string &key) const {
+  const auto it = value_plot_dialogs_.find(valuePlotDialogKey(id, key));
+  if (it == value_plot_dialogs_.end()) {
     return nullptr;
   }
   return it->second.data();
@@ -1131,6 +1385,7 @@ void DiagnosticsMonitorPanel::refreshUi() {
   refreshOverview(snapshots);
   refreshEvents();
   refreshDetailDialogs();
+  refreshValuePlotDialogs();
 }
 
 void DiagnosticsMonitorPanel::refreshOverview(
@@ -1301,10 +1556,35 @@ void DiagnosticsMonitorPanel::refreshDetailDialogs() {
   }
 }
 
+void DiagnosticsMonitorPanel::refreshValuePlotDialogs() {
+  const auto now = std::chrono::steady_clock::now();
+  const auto window = std::chrono::seconds(history_window_spin_->value());
+  for (auto it = value_plot_dialogs_.begin(); it != value_plot_dialogs_.end();) {
+    auto *dialog = it->second.data();
+    if (dialog == nullptr) {
+      it = value_plot_dialogs_.erase(it);
+      continue;
+    }
+
+    std::optional<DiagnosticSnapshot> snapshot;
+    std::vector<ValueHistorySample> history;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      snapshot = model_.snapshot(dialog->id(), now);
+      history = model_.valueHistoryFor(dialog->id(), dialog->key());
+    }
+    dialog->refresh(snapshot, std::move(history), now, window);
+    ++it;
+  }
+}
+
 void DiagnosticsMonitorPanel::openDetailDialog(const std::string &id) {
   auto &dialog = detail_dialogs_[id];
   if (dialog.isNull()) {
-    dialog = new DiagnosticDetailDialog(id, this);
+    dialog = new DiagnosticDetailDialog(
+        id, [this](const std::string &diagnostic_id, const std::string &key) {
+          openValuePlotDialog(diagnostic_id, key);
+        }, this);
     QObject::connect(dialog.data(), &QObject::destroyed, this, [this, id]() {
       detail_dialogs_.erase(id);
     });
@@ -1322,6 +1602,31 @@ void DiagnosticsMonitorPanel::openDetailDialog(const std::string &id) {
     events = model_.eventsForDiagnostic(id);
   }
   dialog->refresh(snapshot, std::move(history), events, now, window);
+  dialog->show();
+  dialog->raise();
+  dialog->activateWindow();
+}
+
+void DiagnosticsMonitorPanel::openValuePlotDialog(const std::string &id,
+                                                  const std::string &key) {
+  const auto map_key = valuePlotDialogKey(id, key);
+  auto &dialog = value_plot_dialogs_[map_key];
+  if (dialog.isNull()) {
+    dialog = new DiagnosticValuePlotDialog(id, key, this);
+    QObject::connect(dialog.data(), &QObject::destroyed, this,
+                     [this, map_key]() { value_plot_dialogs_.erase(map_key); });
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  const auto window = std::chrono::seconds(history_window_spin_->value());
+  std::optional<DiagnosticSnapshot> snapshot;
+  std::vector<ValueHistorySample> history;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    snapshot = model_.snapshot(id, now);
+    history = model_.valueHistoryFor(id, key);
+  }
+  dialog->refresh(snapshot, std::move(history), now, window);
   dialog->show();
   dialog->raise();
   dialog->activateWindow();

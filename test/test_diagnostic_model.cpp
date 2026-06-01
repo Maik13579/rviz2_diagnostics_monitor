@@ -167,6 +167,73 @@ TEST(DiagnosticModel, HistoryPruningRespectsWindow) {
   EXPECT_EQ(history.back().level, Severity::Warn);
 }
 
+TEST(DiagnosticModel, NumericValueHistoryRecordsEveryIncomingSample) {
+  DiagnosticModel model;
+  const auto now = std::chrono::steady_clock::now();
+  const auto ok =
+      status("Power/Battery", "battery",
+             diagnostic_msgs::msg::DiagnosticStatus::OK, "Nominal",
+             {{"percent", "80 %"}});
+  model.ingest(array({ok}), now);
+  model.ingest(array({ok}), now + 1s);
+
+  const auto history = model.valueHistoryFor("Power/Battery\nbattery", "percent");
+  ASSERT_EQ(history.size(), 2u);
+  EXPECT_EQ(history[0].value, 80.0);
+  EXPECT_EQ(history[1].value, 80.0);
+  EXPECT_EQ(history[0].raw_value, "80 %");
+  EXPECT_EQ(history[1].severity, Severity::Ok);
+  EXPECT_EQ(model.events().size(), 1u);
+}
+
+TEST(DiagnosticModel, NumericValueParserAcceptsLeadingNumbersWithUnits) {
+  ASSERT_TRUE(DiagnosticModel::parseNumericValue("10 Hz"));
+  EXPECT_DOUBLE_EQ(*DiagnosticModel::parseNumericValue("10 Hz"), 10.0);
+  EXPECT_DOUBLE_EQ(*DiagnosticModel::parseNumericValue("63 C"), 63.0);
+  EXPECT_DOUBLE_EQ(*DiagnosticModel::parseNumericValue("12.4%"), 12.4);
+  EXPECT_DOUBLE_EQ(*DiagnosticModel::parseNumericValue("-3.5"), -3.5);
+  EXPECT_DOUBLE_EQ(*DiagnosticModel::parseNumericValue("1.2e-3"), 0.0012);
+  EXPECT_FALSE(DiagnosticModel::parseNumericValue("nominal"));
+  EXPECT_FALSE(DiagnosticModel::parseNumericValue("0x42"));
+}
+
+TEST(DiagnosticModel, NumericValueHistoryPruningRespectsWindow) {
+  DiagnosticModel model;
+  DiagnosticModelConfig config;
+  config.history_window = 10min;
+  model.setConfig(config);
+  const auto now = std::chrono::steady_clock::now();
+
+  model.ingest(array({status("CPU", "ipc", diagnostic_msgs::msg::DiagnosticStatus::OK,
+                             "OK", {{"load", "0.5"}})}),
+               now);
+  model.ingest(array({status("CPU", "ipc", diagnostic_msgs::msg::DiagnosticStatus::OK,
+                             "OK", {{"load", "0.7"}})}),
+               now + 11min);
+
+  const auto history = model.valueHistoryFor("CPU\nipc", "load");
+  ASSERT_EQ(history.size(), 1u);
+  EXPECT_EQ(history.front().value, 0.7);
+}
+
+TEST(DiagnosticModel, NumericValueHistoryKeepsSampleSeverity) {
+  DiagnosticModel model;
+  const auto now = std::chrono::steady_clock::now();
+  model.ingest(array({status("Drive/Motor", "motor",
+                             diagnostic_msgs::msg::DiagnosticStatus::WARN,
+                             "Warm", {{"temperature", "72 C"}})}),
+               now);
+  model.ingest(array({status("Drive/Motor", "motor",
+                             diagnostic_msgs::msg::DiagnosticStatus::ERROR,
+                             "Fault", {{"temperature", "91 C"}})}),
+               now + 1s);
+
+  const auto history = model.valueHistoryFor("Drive/Motor\nmotor", "temperature");
+  ASSERT_EQ(history.size(), 2u);
+  EXPECT_EQ(history[0].severity, Severity::Warn);
+  EXPECT_EQ(history[1].severity, Severity::Error);
+}
+
 TEST(DiagnosticModel, LocalStaleTimeoutConvertsMissingUpdates) {
   DiagnosticModel model;
   DiagnosticModelConfig config;

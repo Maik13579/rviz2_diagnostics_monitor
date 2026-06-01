@@ -43,6 +43,13 @@ struct HistorySample {
   Severity level{Severity::Stale};
 };
 
+struct ValueHistorySample {
+  std::chrono::steady_clock::time_point stamp{};
+  double value{0.0};
+  Severity severity{Severity::Stale};
+  std::string raw_value;
+};
+
 struct DiagnosticEvent {
   std::uint64_t sequence{0};
   std::chrono::steady_clock::time_point stamp{};
@@ -106,10 +113,13 @@ public:
   std::vector<DiagnosticEvent> eventsForDiagnostic(const std::string &id) const;
 
   std::vector<HistorySample> historyFor(const std::string &id) const;
+  std::vector<ValueHistorySample> valueHistoryFor(
+      const std::string &id, const std::string &key) const;
   const std::vector<HistorySample> &overallHistory() const {
     return overall_history_;
   }
 
+  static std::optional<double> parseNumericValue(const std::string &value);
   static std::vector<std::string> splitDiagnosticName(const std::string &name);
   static bool matchesSearch(const DiagnosticSnapshot &snapshot,
                             const std::string &search);
@@ -121,6 +131,8 @@ private:
     DiagnosticSnapshot current;
     std::string state_signature;
     std::vector<HistorySample> history;
+    std::unordered_map<std::string, std::vector<ValueHistorySample>>
+        value_histories;
     bool stale_event_emitted{false};
   };
 
@@ -136,6 +148,8 @@ private:
                    std::chrono::steady_clock::time_point now);
   void appendHistory(Entry &entry, Severity level,
                      std::chrono::steady_clock::time_point now);
+  void appendValueHistory(Entry &entry, const DiagnosticSnapshot &snapshot,
+                          std::chrono::steady_clock::time_point now);
   void appendOverallHistory(std::chrono::steady_clock::time_point now);
   void prune(std::chrono::steady_clock::time_point now);
 

@@ -21,6 +21,7 @@
 
 class QCheckBox;
 class QDialog;
+class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -34,6 +35,7 @@ namespace rviz2_diagnostics_monitor {
 
 class DiagnosticDetailDialog;
 class DiagnosticGroupDialog;
+class DiagnosticValuePlotDialog;
 
 class TimelineWidget : public QWidget {
 public:
@@ -59,6 +61,28 @@ private:
   std::function<void(std::chrono::steady_clock::time_point)> click_callback_;
 };
 
+class ValuePlotWidget : public QWidget {
+public:
+  explicit ValuePlotWidget(QWidget *parent = nullptr);
+
+  void setSamples(std::vector<ValueHistorySample> samples,
+                  std::chrono::steady_clock::time_point now,
+                  std::chrono::milliseconds window);
+  void setAutoScale(bool auto_scale);
+  void setManualRange(double min_value, double max_value);
+
+protected:
+  void paintEvent(QPaintEvent *event) override;
+
+private:
+  std::vector<ValueHistorySample> samples_;
+  std::chrono::steady_clock::time_point now_{};
+  std::chrono::milliseconds window_{std::chrono::minutes(10)};
+  bool auto_scale_{true};
+  double manual_min_{0.0};
+  double manual_max_{1.0};
+};
+
 class DiagnosticsMonitorPanel : public rviz_common::Panel {
 public:
   explicit DiagnosticsMonitorPanel(QWidget *parent = nullptr);
@@ -80,6 +104,8 @@ public:
   QTabWidget *overviewTabsForTest() const;
   QLineEdit *overviewSearchForTest() const;
   QDialog *detailDialogForTest(const std::string &id) const;
+  QDialog *valuePlotDialogForTest(const std::string &id,
+                                  const std::string &key) const;
   QDialog *groupDialogForTest(const QString &path) const;
   void openGroupDialogForTest(const QString &path);
   int detailDialogCountForTest() const;
@@ -98,7 +124,9 @@ private:
   void refreshOverview(const std::vector<DiagnosticSnapshot> &snapshots);
   void refreshEvents();
   void refreshDetailDialogs();
+  void refreshValuePlotDialogs();
   void openDetailDialog(const std::string &id);
+  void openValuePlotDialog(const std::string &id, const std::string &key);
   void openGroupDialog(const QString &path);
   void addTreeNode(QTreeWidget *tree, QTreeWidgetItem *parent,
                    const TreeNode &node);
@@ -123,6 +151,7 @@ private:
   mutable std::mutex mutex_;
   DiagnosticModel model_;
   std::map<std::string, QPointer<DiagnosticDetailDialog>> detail_dialogs_;
+  std::map<std::string, QPointer<DiagnosticValuePlotDialog>> value_plot_dialogs_;
   std::map<QString, QPointer<DiagnosticGroupDialog>> group_dialogs_;
 
   QLineEdit *topic_edit_{nullptr};
