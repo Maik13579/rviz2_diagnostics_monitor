@@ -235,8 +235,11 @@ public:
     pause_button_ = new QPushButton("Pause Feed", header_row);
     pause_button_->setObjectName("diagnostic_detail_pause_button");
     pause_button_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    auto_latest_check_ = new QCheckBox("Auto latest", header_row);
+    auto_latest_check_->setObjectName("diagnostic_detail_auto_latest");
     header_layout->addWidget(severity_badge_);
     header_layout->addWidget(header_, 1);
+    header_layout->addWidget(auto_latest_check_);
     header_layout->addWidget(pause_button_);
 
     events_ = new QListWidget(this);
@@ -270,6 +273,13 @@ public:
 
     QObject::connect(events_, &QListWidget::currentRowChanged, this,
                      [this](int row) { showEventDetail(row); });
+    QObject::connect(auto_latest_check_, &QCheckBox::toggled, this,
+                     [this](bool checked) {
+      if (checked && events_->count() > 0) {
+        events_->setCurrentRow(0);
+        events_->scrollToItem(events_->item(0), QAbstractItemView::PositionAtTop);
+      }
+    });
     timeline_->setClickCallback([this](auto stamp) {
       selectClosestEvent(stamp);
     });
@@ -340,6 +350,10 @@ public:
     }
     if (signatures == event_row_signatures_) {
       updateVisibleEventRowAges(events_, now);
+      if (auto_latest_check_->isChecked() && events_->count() > 0) {
+        events_->setCurrentRow(0);
+        events_->scrollToItem(events_->item(0), QAbstractItemView::PositionAtTop);
+      }
       return;
     }
     event_row_signatures_ = std::move(signatures);
@@ -396,7 +410,9 @@ public:
       }
     }
     if (selected_row < 0 && events_->count() > 0) {
-      if (selected_stamp) {
+      if (auto_latest_check_->isChecked()) {
+        selected_row = 0;
+      } else if (selected_stamp) {
         selected_row = closestEventRow(rendered_events, *selected_stamp);
       } else {
         selected_row = 0;
@@ -452,6 +468,7 @@ private:
   }
 
   void selectClosestEvent(std::chrono::steady_clock::time_point stamp) {
+    auto_latest_check_->setChecked(false);
     pending_timeline_selection_ = stamp;
     if (displayed_events_.empty()) {
       return;
@@ -495,6 +512,7 @@ private:
   QLabel *header_{nullptr};
   QLabel *severity_badge_{nullptr};
   QPushButton *pause_button_{nullptr};
+  QCheckBox *auto_latest_check_{nullptr};
   TimelineWidget *timeline_{nullptr};
   QListWidget *events_{nullptr};
   QLabel *message_{nullptr};

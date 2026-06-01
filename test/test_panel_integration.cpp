@@ -701,6 +701,62 @@ TEST(PanelIntegration, DetailPopupPauseFreezesEventFeedAndContinuesToNewest) {
   dialog->hide();
 }
 
+TEST(PanelIntegration, DetailPopupAutoLatestIsOptIn) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  diagnostic_msgs::msg::DiagnosticArray initial;
+  initial.status = {
+      makeStatus("Drive/Motor", "motor",
+                 diagnostic_msgs::msg::DiagnosticStatus::WARN, "Warm"),
+  };
+  panel.ingestForTest(initial);
+
+  diagnostic_msgs::msg::DiagnosticArray fault;
+  fault.status = {
+      makeStatus("Drive/Motor", "motor",
+                 diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Fault"),
+  };
+  panel.ingestForTest(fault);
+  panel.refreshForTest();
+
+  const std::string id = "Drive/Motor\nmotor";
+  auto *event_list = panel.eventFeedListForTest();
+  ASSERT_NE(event_list, nullptr);
+  ASSERT_TRUE(QMetaObject::invokeMethod(
+      event_list, "itemDoubleClicked", Qt::DirectConnection,
+      Q_ARG(QListWidgetItem *, event_list->item(0))));
+  QApplication::processEvents();
+
+  auto *dialog = panel.detailDialogForTest(id);
+  ASSERT_NE(dialog, nullptr);
+  auto *detail_events = dialog->findChild<QListWidget *>("diagnostic_detail_events");
+  auto *message = dialog->findChild<QLabel *>("diagnostic_detail_message");
+  auto *auto_latest = dialog->findChild<QCheckBox *>("diagnostic_detail_auto_latest");
+  ASSERT_NE(detail_events, nullptr);
+  ASSERT_NE(message, nullptr);
+  ASSERT_NE(auto_latest, nullptr);
+  EXPECT_FALSE(auto_latest->isChecked());
+
+  detail_events->setCurrentRow(1);
+  EXPECT_EQ(message->text(), "Warm");
+
+  diagnostic_msgs::msg::DiagnosticArray recovered;
+  recovered.status = {
+      makeStatus("Drive/Motor", "motor",
+                 diagnostic_msgs::msg::DiagnosticStatus::OK, "Recovered"),
+  };
+  panel.ingestForTest(recovered);
+  panel.refreshForTest();
+
+  ASSERT_GE(detail_events->count(), 3);
+  EXPECT_EQ(message->text(), "Warm");
+
+  auto_latest->setChecked(true);
+  EXPECT_EQ(detail_events->currentRow(), 0);
+  EXPECT_EQ(message->text(), "Recovered");
+  dialog->hide();
+}
+
 TEST(PanelIntegration, DetailPopupPlacesHistoryAfterEventDetails) {
   rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
 
