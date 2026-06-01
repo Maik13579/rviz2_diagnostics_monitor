@@ -219,4 +219,23 @@ TEST(DiagnosticModel, EventFilteringUsesSeverityHardwareAndSearch) {
   EXPECT_EQ(events.front().snapshot.name, "Drive/Motor");
 }
 
+TEST(DiagnosticModel, EventFilteringCanTargetExactDiagnostic) {
+  DiagnosticModel model;
+  const auto now = std::chrono::steady_clock::now();
+  model.ingest(array({
+                   status("Drive/Motor", "left",
+                          diagnostic_msgs::msg::DiagnosticStatus::WARN,
+                          "Left warm"),
+                   status("Drive/Motor", "right",
+                          diagnostic_msgs::msg::DiagnosticStatus::ERROR,
+                          "Right fault"),
+               }),
+               now);
+
+  const auto events = model.eventsForDiagnostic("Drive/Motor\nright");
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events.front().snapshot.hardware_id, "right");
+  EXPECT_EQ(events.front().snapshot.message, "Right fault");
+}
+
 } // namespace rviz2_diagnostics_monitor

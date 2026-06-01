@@ -210,6 +210,7 @@ TreeNode DiagnosticModel::tree(std::chrono::steady_clock::time_point now) {
       node = &child->second;
     }
     node->diagnostic_id = id;
+    node->hardware_id = snapshot.hardware_id;
     node->severity = worst(node->severity, snapshot.level);
   }
   return root;
@@ -219,6 +220,10 @@ std::vector<DiagnosticEvent>
 DiagnosticModel::filteredEvents(const EventFilter &filter) const {
   std::vector<DiagnosticEvent> result;
   for (auto it = events_.rbegin(); it != events_.rend(); ++it) {
+    if (!filter.diagnostic_id.empty() &&
+        it->snapshot.id != filter.diagnostic_id) {
+      continue;
+    }
     if (!enabledFor(it->snapshot.level, filter)) {
       continue;
     }
@@ -233,6 +238,13 @@ DiagnosticModel::filteredEvents(const EventFilter &filter) const {
     result.push_back(*it);
   }
   return result;
+}
+
+std::vector<DiagnosticEvent>
+DiagnosticModel::eventsForDiagnostic(const std::string &id) const {
+  EventFilter filter;
+  filter.diagnostic_id = id;
+  return filteredEvents(filter);
 }
 
 std::vector<HistorySample> DiagnosticModel::historyFor(

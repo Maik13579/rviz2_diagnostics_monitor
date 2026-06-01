@@ -4,9 +4,11 @@
 #pragma once
 
 #include <mutex>
+#include <map>
 #include <set>
 #include <string>
 
+#include <QPointer>
 #include <QWidget>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -15,8 +17,10 @@
 #include "rviz2_diagnostics_monitor/diagnostic_model.hpp"
 
 class QCheckBox;
+class QDialog;
 class QLabel;
 class QLineEdit;
+class QPlainTextEdit;
 class QSpinBox;
 class QTabWidget;
 class QTableWidget;
@@ -24,6 +28,8 @@ class QTreeWidget;
 class QTreeWidgetItem;
 
 namespace rviz2_diagnostics_monitor {
+
+class DiagnosticDetailDialog;
 
 class TimelineWidget : public QWidget {
 public:
@@ -59,11 +65,17 @@ public:
   void ingestForTest(const diagnostic_msgs::msg::DiagnosticArray &message);
   void refreshForTest();
   QTreeWidget *overviewTreeForTest() const;
+  QTreeWidget *overviewTreeForTest(const QString &tab) const;
+  QTabWidget *overviewTabsForTest() const;
   QLineEdit *overviewSearchForTest() const;
-  QTableWidget *detailValuesForTest() const;
+  QDialog *detailDialogForTest(const std::string &id) const;
+  int detailDialogCountForTest() const;
+  QPlainTextEdit *eventFeedViewForTest() const;
   std::vector<HistorySample> groupHistoryForTest(const QString &path);
 
   static QColor colorFor(Severity severity);
+  static QString ageText(std::chrono::steady_clock::time_point last_seen,
+                         std::chrono::steady_clock::time_point now);
 
 private:
   void buildUi();
@@ -72,26 +84,22 @@ private:
   void refreshUi();
   void refreshOverview(const std::vector<DiagnosticSnapshot> &snapshots);
   void refreshEvents();
-  void showDetails(const std::string &id);
-  void showGroupDetails(const QString &path);
-  void addSection(QTreeWidgetItem *root, const QString &title,
-                  const std::vector<DiagnosticSnapshot> &snapshots,
-                  Severity severity);
+  void refreshDetailDialogs();
+  void openDetailDialog(const std::string &id);
   void addTreeNode(QTreeWidgetItem *parent, const TreeNode &node);
+  void configureOverviewTree(QTreeWidget *tree);
+  void connectOverviewTree(QTreeWidget *tree);
   void setItemSeverity(QTreeWidgetItem *item, Severity severity);
-  void setRowSeverity(QTableWidget *table, int row, Severity severity);
   void rebuildSubscriptionIfReady();
   TreeNode treeForSnapshots(const std::vector<DiagnosticSnapshot> &snapshots) const;
-  std::set<QString> expandedItemPaths() const;
-  void restoreExpandedItemPaths(const std::set<QString> &expanded_paths);
+  std::map<std::string, std::set<QString>> expandedItemPaths() const;
+  void restoreExpandedItemPaths(
+      const std::map<std::string, std::set<QString>> &expanded_paths);
   QString itemPath(const QTreeWidgetItem *item) const;
   std::vector<DiagnosticSnapshot> snapshotsForGroupPath(const QString &path);
   std::vector<HistorySample> historyForGroupPath(const QString &path);
   static std::vector<DiagnosticSnapshot> aggregateOverviewSnapshots(
       const std::vector<DiagnosticSnapshot> &snapshots);
-
-  static QString ageText(std::chrono::steady_clock::time_point last_seen,
-                         std::chrono::steady_clock::time_point now);
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr
@@ -99,8 +107,7 @@ private:
 
   mutable std::mutex mutex_;
   DiagnosticModel model_;
-  std::string selected_id_;
-  QString selected_group_path_;
+  std::map<std::string, QPointer<DiagnosticDetailDialog>> detail_dialogs_;
 
   QLineEdit *topic_edit_{nullptr};
   QSpinBox *stale_timeout_spin_{nullptr};
@@ -108,19 +115,18 @@ private:
   QSpinBox *max_events_spin_{nullptr};
   QLineEdit *overview_search_{nullptr};
   QLabel *summary_label_{nullptr};
-  QTreeWidget *overview_tree_{nullptr};
-  QLabel *detail_label_{nullptr};
-  QTableWidget *detail_values_{nullptr};
   TimelineWidget *overall_timeline_{nullptr};
-  TimelineWidget *selected_timeline_{nullptr};
+  QTabWidget *overview_tabs_{nullptr};
+  std::map<std::string, QTreeWidget *> overview_trees_;
   QTabWidget *tabs_{nullptr};
   QCheckBox *event_ok_{nullptr};
   QCheckBox *event_warn_{nullptr};
   QCheckBox *event_error_{nullptr};
   QCheckBox *event_stale_{nullptr};
+  QCheckBox *event_wrap_{nullptr};
   QLineEdit *event_hardware_filter_{nullptr};
   QLineEdit *event_search_{nullptr};
-  QTableWidget *event_table_{nullptr};
+  QPlainTextEdit *event_view_{nullptr};
 };
 
 } // namespace rviz2_diagnostics_monitor

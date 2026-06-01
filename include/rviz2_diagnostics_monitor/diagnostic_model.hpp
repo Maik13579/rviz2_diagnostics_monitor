@@ -60,6 +60,7 @@ struct SummaryCounts {
 struct TreeNode {
   std::string label;
   std::string diagnostic_id;
+  std::string hardware_id;
   Severity severity{Severity::Ok};
   std::map<std::string, TreeNode> children;
 };
@@ -75,6 +76,7 @@ struct EventFilter {
   bool show_warn{true};
   bool show_error{true};
   bool show_stale{true};
+  std::string diagnostic_id;
   std::string hardware_id;
   std::string search;
 };
@@ -101,6 +103,7 @@ public:
 
   const std::vector<DiagnosticEvent> &events() const { return events_; }
   std::vector<DiagnosticEvent> filteredEvents(const EventFilter &filter) const;
+  std::vector<DiagnosticEvent> eventsForDiagnostic(const std::string &id) const;
 
   std::vector<HistorySample> historyFor(const std::string &id) const;
   const std::vector<HistorySample> &overallHistory() const {

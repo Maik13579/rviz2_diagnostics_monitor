@@ -5,8 +5,13 @@
 #include <cstdlib>
 
 #include <QApplication>
+#include <QCheckBox>
+#include <QDialog>
 #include <QLineEdit>
+#include <QMetaObject>
+#include <QPlainTextEdit>
 #include <QScrollBar>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QTreeWidget>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
@@ -64,6 +69,15 @@ int childCountWithName(const QTreeWidgetItem *parent, const QString &name) {
     }
   }
   return count;
+}
+
+QCheckBox *checkboxWithText(QWidget *widget, const QString &text) {
+  for (auto *check : widget->findChildren<QCheckBox *>()) {
+    if (check->text() == text) {
+      return check;
+    }
+  }
+  return nullptr;
 }
 
 } // namespace
@@ -162,6 +176,25 @@ TEST(PanelIntegration, RefreshKeepsCollapsedTreeItemsCollapsed) {
   EXPECT_FALSE(refreshed_all_devices->isExpanded());
 }
 
+TEST(PanelIntegration, OverviewUsesInnerTabsAndCompactHeaders) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+  panel.refreshForTest();
+
+  auto *tabs = panel.overviewTabsForTest();
+  ASSERT_NE(tabs, nullptr);
+  ASSERT_EQ(tabs->count(), 4);
+  EXPECT_EQ(tabs->tabText(0), "All");
+  EXPECT_EQ(tabs->tabText(1), "Errors");
+  EXPECT_EQ(tabs->tabText(2), "Warnings");
+  EXPECT_EQ(tabs->tabText(3), "Stale");
+
+  auto *tree = panel.overviewTreeForTest("All");
+  ASSERT_NE(tree, nullptr);
+  ASSERT_EQ(tree->columnCount(), 2);
+  EXPECT_EQ(tree->headerItem()->text(0), "Device");
+  EXPECT_EQ(tree->headerItem()->text(1), "Hardware ID");
+}
+
 TEST(PanelIntegration, OverviewFilterAppliesToAllDevicesTree) {
   auto panel_node =
       std::make_shared<rclcpp::Node>("diagnostics_monitor_filter_panel_test");
@@ -244,58 +277,60 @@ TEST(PanelIntegration, RefreshKeepsTreeScrollPosition) {
   EXPECT_EQ(tree->verticalScrollBar()->value(), expected_scroll);
 }
 
-TEST(PanelIntegration, SelectingGroupShowsMemberDiagnostics) {
+TEST(PanelIntegration, SeverityTabsPreserveDiagnosticHierarchy) {
   rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
 
   diagnostic_msgs::msg::DiagnosticArray message;
-  auto front_lidar =
-      makeMessage(diagnostic_msgs::msg::DiagnosticStatus::OK, "Nominal")
-          .status.front();
-  diagnostic_msgs::msg::DiagnosticStatus rear_lidar;
-  rear_lidar.name = "Sensors/Lidar/Rear";
-  rear_lidar.hardware_id = "lidar_rear";
-  rear_lidar.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
-  rear_lidar.message = "Scan jitter";
-  diagnostic_msgs::msg::DiagnosticStatus battery;
-  battery.name = "Power/Battery";
-  battery.hardware_id = "battery";
-  battery.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
-  battery.message = "Nominal";
-  message.status = {front_lidar, rear_lidar, battery};
+  message.status = {
+      makeStatus("Drive/Motor/Left", "left_motor",
+                 diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Fault"),
+      makeStatus("Drive/Motor/Right", "right_motor",
+                 diagnostic_msgs::msg::DiagnosticStatus::WARN, "Warm"),
+      makeStatus("Power/Battery", "battery",
+                 diagnostic_msgs::msg::DiagnosticStatus::STALE, "No data"),
+  };
 
   panel.ingestForTest(message);
   panel.refreshForTest();
 
-  auto *tree = panel.overviewTreeForTest();
-  ASSERT_NE(tree, nullptr);
-  const auto lidar_items =
-      tree->findItems("Lidar", Qt::MatchExactly | Qt::MatchRecursive, 0);
-  ASSERT_FALSE(lidar_items.empty());
-  tree->setCurrentItem(lidar_items.front());
-  QApplication::processEvents();
+  auto *errors = panel.overviewTreeForTest("Errors");
+  ASSERT_NE(errors, nullptr);
+  EXPECT_FALSE(
+      errors->findItems("Drive", Qt::MatchExactly | Qt::MatchRecursive, 0)
+          .empty());
+  EXPECT_FALSE(
+      errors->findItems("Motor", Qt::MatchExactly | Qt::MatchRecursive, 0)
+          .empty());
+  EXPECT_FALSE(
+      errors->findItems("Left", Qt::MatchExactly | Qt::MatchRecursive, 0)
+          .empty());
+  EXPECT_TRUE(
+      errors->findItems("Right", Qt::MatchExactly | Qt::MatchRecursive, 0)
+          .empty());
 
-  auto *details = panel.detailValuesForTest();
-  ASSERT_NE(details, nullptr);
-  EXPECT_EQ(details->rowCount(), 2);
+  auto *warnings = panel.overviewTreeForTest("Warnings");
+  ASSERT_NE(warnings, nullptr);
+  EXPECT_FALSE(
+      warnings->findItems("Drive", Qt::MatchExactly | Qt::MatchRecursive, 0)
+          .empty());
+  EXPECT_FALSE(
+      warnings->findItems("Motor", Qt::MatchExactly | Qt::MatchRecursive, 0)
+          .empty());
+  EXPECT_FALSE(
+      warnings->findItems("Right", Qt::MatchExactly | Qt::MatchRecursive, 0)
+          .empty());
+  EXPECT_TRUE(
+      warnings->findItems("Left", Qt::MatchExactly | Qt::MatchRecursive, 0)
+          .empty());
 
-  QStringList names;
-  for (int row = 0; row < details->rowCount(); ++row) {
-    ASSERT_NE(details->item(row, 1), nullptr);
-    names.push_back(details->item(row, 1)->text());
-  }
-  EXPECT_TRUE(names.contains("Sensors/Lidar/Front"));
-  EXPECT_TRUE(names.contains("Sensors/Lidar/Rear"));
-  EXPECT_FALSE(names.contains("Power/Battery"));
-
-  auto warning_message = message;
-  warning_message.status[1].level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
-  warning_message.status[1].message = "Offline";
-  panel.ingestForTest(warning_message);
-
-  const auto history = panel.groupHistoryForTest("All Devices/Sensors/Lidar");
-  ASSERT_GE(history.size(), 2u);
-  EXPECT_EQ(history.front().level, rviz2_diagnostics_monitor::Severity::Warn);
-  EXPECT_EQ(history.back().level, rviz2_diagnostics_monitor::Severity::Error);
+  auto *stale = panel.overviewTreeForTest("Stale");
+  ASSERT_NE(stale, nullptr);
+  EXPECT_FALSE(
+      stale->findItems("Power", Qt::MatchExactly | Qt::MatchRecursive, 0)
+          .empty());
+  EXPECT_FALSE(
+      stale->findItems("Battery", Qt::MatchExactly | Qt::MatchRecursive, 0)
+          .empty());
 }
 
 TEST(PanelIntegration, OverviewAggregatesSameNameDiagnostics) {
@@ -312,20 +347,19 @@ TEST(PanelIntegration, OverviewAggregatesSameNameDiagnostics) {
   panel.ingestForTest(message);
   panel.refreshForTest();
 
-  auto *tree = panel.overviewTreeForTest();
+  auto *tree = panel.overviewTreeForTest("Errors");
   ASSERT_NE(tree, nullptr);
-  auto *errors = topLevelItem(tree, "Error Devices");
-  ASSERT_NE(errors, nullptr);
-  EXPECT_EQ(childCountWithName(errors, "Drive/Motor"), 1);
+  auto *all_devices = topLevelItem(tree, "All Devices");
+  ASSERT_NE(all_devices, nullptr);
+  auto *drive = all_devices->child(0);
+  ASSERT_NE(drive, nullptr);
+  EXPECT_EQ(drive->text(0), "Drive");
+  EXPECT_EQ(childCountWithName(drive, "Motor"), 1);
 
   const auto motor_items =
       tree->findItems("Motor", Qt::MatchExactly | Qt::MatchRecursive, 0);
   EXPECT_EQ(motor_items.size(), 1);
-
-  const auto error_rows =
-      tree->findItems("Drive/Motor", Qt::MatchExactly | Qt::MatchRecursive, 0);
-  ASSERT_EQ(error_rows.size(), 1);
-  EXPECT_EQ(error_rows.front()->text(3), "motor_controller");
+  EXPECT_EQ(motor_items.front()->text(1), "motor_controller");
 }
 
 TEST(PanelIntegration, OverviewSameNameSeverityUsesWorstLevel) {
@@ -348,8 +382,10 @@ TEST(PanelIntegration, OverviewSameNameSeverityUsesWorstLevel) {
       tree->findItems("Motor", Qt::MatchExactly | Qt::MatchRecursive, 0);
   ASSERT_EQ(motor_items.size(), 1);
 
-  EXPECT_EQ(motor_items.front()->text(1), "ERROR");
   EXPECT_EQ(motor_items.front()->foreground(0).color(),
+            rviz2_diagnostics_monitor::DiagnosticsMonitorPanel::colorFor(
+                rviz2_diagnostics_monitor::Severity::Error));
+  EXPECT_EQ(motor_items.front()->foreground(1).color(),
             rviz2_diagnostics_monitor::DiagnosticsMonitorPanel::colorFor(
                 rviz2_diagnostics_monitor::Severity::Error));
 }
@@ -368,21 +404,119 @@ TEST(PanelIntegration, OverviewStaleDuplicateUsesWorstCurrentSeverity) {
   panel.ingestForTest(message);
   panel.refreshForTest();
 
-  auto *tree = panel.overviewTreeForTest();
+  auto *tree = panel.overviewTreeForTest("Stale");
   ASSERT_NE(tree, nullptr);
-  auto *stale = topLevelItem(tree, "Stale Devices");
-  ASSERT_NE(stale, nullptr);
-  EXPECT_EQ(childCountWithName(stale, "Drive/Motor"), 1);
+  auto *all_devices = topLevelItem(tree, "All Devices");
+  ASSERT_NE(all_devices, nullptr);
+  auto *drive = all_devices->child(0);
+  ASSERT_NE(drive, nullptr);
+  EXPECT_EQ(childCountWithName(drive, "Motor"), 1);
 
   const auto motor_items =
       tree->findItems("Motor", Qt::MatchExactly | Qt::MatchRecursive, 0);
   ASSERT_EQ(motor_items.size(), 1);
-  EXPECT_EQ(motor_items.front()->text(1), "STALE");
+  EXPECT_EQ(motor_items.front()->foreground(0).color(),
+            rviz2_diagnostics_monitor::DiagnosticsMonitorPanel::colorFor(
+                rviz2_diagnostics_monitor::Severity::Stale));
+  EXPECT_EQ(motor_items.front()->text(1), "motor_controller");
+}
 
-  const auto stale_rows =
-      tree->findItems("Drive/Motor", Qt::MatchExactly | Qt::MatchRecursive, 0);
-  ASSERT_EQ(stale_rows.size(), 1);
-  EXPECT_EQ(stale_rows.front()->text(3), "motor_controller");
+TEST(PanelIntegration, SearchFilteringAppliesAcrossOverviewTrees) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  diagnostic_msgs::msg::DiagnosticArray message;
+  message.status = {
+      makeStatus("Drive/Motor", "motor",
+                 diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Fault"),
+      makeStatus("Power/Battery", "battery",
+                 diagnostic_msgs::msg::DiagnosticStatus::WARN, "Low"),
+  };
+
+  panel.ingestForTest(message);
+  panel.refreshForTest();
+  panel.overviewSearchForTest()->setText("battery");
+  panel.refreshForTest();
+
+  auto *all = panel.overviewTreeForTest("All");
+  auto *warnings = panel.overviewTreeForTest("Warnings");
+  auto *errors = panel.overviewTreeForTest("Errors");
+  ASSERT_NE(all, nullptr);
+  ASSERT_NE(warnings, nullptr);
+  ASSERT_NE(errors, nullptr);
+
+  EXPECT_FALSE(
+      all->findItems("Battery", Qt::MatchExactly | Qt::MatchRecursive, 0)
+          .empty());
+  EXPECT_FALSE(
+      warnings->findItems("Battery", Qt::MatchExactly | Qt::MatchRecursive, 0)
+          .empty());
+  EXPECT_TRUE(
+      errors->findItems("Motor", Qt::MatchExactly | Qt::MatchRecursive, 0)
+          .empty());
+}
+
+TEST(PanelIntegration, DoubleClickingDiagnosticOpensAndReusesDetailDialog) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  diagnostic_msgs::msg::DiagnosticArray message;
+  auto status =
+      makeMessage(diagnostic_msgs::msg::DiagnosticStatus::WARN, "Scan jitter")
+          .status.front();
+  message.status = {status};
+
+  panel.ingestForTest(message);
+  panel.refreshForTest();
+
+  auto *tree = panel.overviewTreeForTest("All");
+  ASSERT_NE(tree, nullptr);
+  const auto front_items =
+      tree->findItems("Front", Qt::MatchExactly | Qt::MatchRecursive, 0);
+  ASSERT_EQ(front_items.size(), 1);
+
+  const std::string id = "Sensors/Lidar/Front\nlidar_front";
+  ASSERT_TRUE(QMetaObject::invokeMethod(
+      tree, "itemDoubleClicked", Qt::DirectConnection,
+      Q_ARG(QTreeWidgetItem *, front_items.front()), Q_ARG(int, 0)));
+  QApplication::processEvents();
+
+  auto *dialog = panel.detailDialogForTest(id);
+  ASSERT_NE(dialog, nullptr);
+  EXPECT_EQ(panel.detailDialogCountForTest(), 1);
+  EXPECT_TRUE(dialog->windowTitle().contains("Sensors/Lidar/Front [lidar_front]"));
+  ASSERT_NE(dialog->findChild<QTableWidget *>("diagnostic_detail_values"), nullptr);
+  ASSERT_NE(dialog->findChild<QTableWidget *>("diagnostic_detail_events"), nullptr);
+
+  ASSERT_TRUE(QMetaObject::invokeMethod(
+      tree, "itemDoubleClicked", Qt::DirectConnection,
+      Q_ARG(QTreeWidgetItem *, front_items.front()), Q_ARG(int, 0)));
+  QApplication::processEvents();
+  EXPECT_EQ(panel.detailDialogForTest(id), dialog);
+  EXPECT_EQ(panel.detailDialogCountForTest(), 1);
+  dialog->close();
+}
+
+TEST(PanelIntegration, EventFeedUsesPlainTextViewWithWrapSetting) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  diagnostic_msgs::msg::DiagnosticArray message;
+  message.status = {
+      makeStatus("Drive/Motor", "motor",
+                 diagnostic_msgs::msg::DiagnosticStatus::ERROR,
+                 "Over temperature"),
+  };
+  panel.ingestForTest(message);
+  panel.refreshForTest();
+
+  auto *event_view = panel.eventFeedViewForTest();
+  ASSERT_NE(event_view, nullptr);
+  EXPECT_NE(event_view->toPlainText().indexOf("Drive/Motor"), -1);
+  EXPECT_NE(event_view->toPlainText().indexOf("Over temperature"), -1);
+  EXPECT_EQ(event_view->lineWrapMode(), QPlainTextEdit::WidgetWidth);
+
+  auto *wrap = checkboxWithText(&panel, "Wrap");
+  ASSERT_NE(wrap, nullptr);
+  wrap->setChecked(false);
+  EXPECT_EQ(event_view->lineWrapMode(), QPlainTextEdit::NoWrap);
 }
 
 int main(int argc, char **argv) {
