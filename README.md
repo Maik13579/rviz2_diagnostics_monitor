@@ -15,8 +15,8 @@ hierarchical trees. Double-click a diagnostic leaf to open its detail popup.
 
 ## Event Feed
 
-The Event Feed tab records diagnostic state changes only. It uses a wrapped
-plain-text log view and can be filtered by severity, hardware ID, and free-text
-search.
+The Event Feed tab records diagnostic state changes only. It shows a compact
+name/message table, can be filtered by severity, hardware ID, and free-text
+search, and opens the full diagnostic popup on row double-click.
 
 ![Diagnostics monitor event feed](doc/event_feed.png)

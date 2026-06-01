@@ -10,6 +10,7 @@
 #include <sstream>
 
 #include <QApplication>
+#include <QAbstractItemView>
 #include <QBrush>
 #include <QCheckBox>
 #include <QDialog>
@@ -17,23 +18,18 @@
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMetaObject>
 #include <QPainter>
-#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QStringList>
-#include <QFontDatabase>
-#include <QFontInfo>
-#include <QSyntaxHighlighter>
 #include <QTabWidget>
 #include <QTableWidget>
-#include <QTextCharFormat>
-#include <QTextCursor>
 #include <QTimer>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -65,50 +61,6 @@ QString valuesText(const std::vector<DiagnosticValue> &values) {
   }
   return qstr(stream.str());
 }
-
-QString padded(const QString &text, const int width) {
-  return text.leftJustified(width, ' ', true);
-}
-
-QFont logFont() {
-  QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-  if (!QFontInfo(font).fixedPitch()) {
-    const QStringList candidates = {
-        "DejaVu Sans Mono", "Liberation Mono", "Ubuntu Mono", "Monospace"};
-    for (const auto &family : candidates) {
-      QFont candidate(family);
-      candidate.setStyleHint(QFont::Monospace);
-      candidate.setFixedPitch(true);
-      if (QFontInfo(candidate).fixedPitch()) {
-        font = candidate;
-        break;
-      }
-    }
-  }
-  font.setStyleHint(QFont::Monospace);
-  font.setFixedPitch(true);
-  return font;
-}
-
-class EventFeedHighlighter : public QSyntaxHighlighter {
-public:
-  explicit EventFeedHighlighter(QTextDocument *parent) : QSyntaxHighlighter(parent) {}
-
-protected:
-  void highlightBlock(const QString &text) override {
-    QTextCharFormat format;
-    if (text.contains("ERROR")) {
-      format.setForeground(DiagnosticsMonitorPanel::colorFor(Severity::Error));
-    } else if (text.contains("WARN ")) {
-      format.setForeground(DiagnosticsMonitorPanel::colorFor(Severity::Warn));
-    } else if (text.contains("STALE")) {
-      format.setForeground(DiagnosticsMonitorPanel::colorFor(Severity::Stale));
-    } else {
-      format.setForeground(DiagnosticsMonitorPanel::colorFor(Severity::Ok));
-    }
-    setFormat(0, text.size(), format);
-  }
-};
 
 } // namespace
 
@@ -303,9 +255,6 @@ void DiagnosticsMonitorPanel::load(const rviz_common::Config &config) {
   if (config.mapGetBool("Show STALE Events", &bool_value)) {
     event_stale_->setChecked(bool_value);
   }
-  if (config.mapGetBool("Wrap Event Feed", &bool_value)) {
-    event_wrap_->setChecked(bool_value);
-  }
 
   applySettingsFromControls();
   rebuildSubscriptionIfReady();
@@ -321,7 +270,6 @@ void DiagnosticsMonitorPanel::save(rviz_common::Config config) const {
   config.mapSetValue("Show WARN Events", event_warn_->isChecked());
   config.mapSetValue("Show ERROR Events", event_error_->isChecked());
   config.mapSetValue("Show STALE Events", event_stale_->isChecked());
-  config.mapSetValue("Wrap Event Feed", event_wrap_->isChecked());
 }
 
 void DiagnosticsMonitorPanel::initializeForTest(
@@ -399,8 +347,8 @@ int DiagnosticsMonitorPanel::detailDialogCountForTest() const {
   return count;
 }
 
-QPlainTextEdit *DiagnosticsMonitorPanel::eventFeedViewForTest() const {
-  return event_view_;
+QTableWidget *DiagnosticsMonitorPanel::eventFeedTableForTest() const {
+  return event_table_;
 }
 
 std::vector<HistorySample>
@@ -493,38 +441,37 @@ void DiagnosticsMonitorPanel::buildUi() {
   event_search_->setMinimumWidth(0);
   event_filter_layout->addWidget(event_hardware_filter_);
   event_filter_layout->addWidget(event_search_);
-  auto *event_display_row = new QWidget(event_filters);
-  auto *event_display_layout = new QHBoxLayout(event_display_row);
-  event_display_layout->setContentsMargins(0, 0, 0, 0);
-  event_display_layout->setSpacing(6);
-  event_wrap_ = new QCheckBox("Wrap", event_display_row);
-  event_wrap_->setChecked(true);
-  event_display_layout->addWidget(event_wrap_);
-  event_display_layout->addStretch(1);
-  event_filter_layout->addWidget(event_display_row);
   events_layout->addWidget(event_filters);
-  event_view_ = new QPlainTextEdit(events);
-  event_view_->setObjectName("diagnostic_event_feed");
-  event_view_->setReadOnly(true);
-  const QFont fixed_font = logFont();
-  event_view_->setFont(fixed_font);
-  event_view_->document()->setDefaultFont(fixed_font);
-  event_view_->setStyleSheet(
-      "QPlainTextEdit { font-family: 'DejaVu Sans Mono', 'Liberation Mono', "
-      "'Ubuntu Mono', monospace; }");
-  event_view_->setLineWrapMode(QPlainTextEdit::WidgetWidth);
-  new EventFeedHighlighter(event_view_->document());
-  events_layout->addWidget(event_view_, 1);
+  event_table_ = new QTableWidget(0, 2, events);
+  event_table_->setObjectName("diagnostic_event_feed");
+  event_table_->setHorizontalHeaderLabels({"Name", "Message"});
+  event_table_->setMinimumWidth(0);
+  event_table_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+  event_table_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  event_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+  event_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+  event_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  event_table_->verticalHeader()->setVisible(false);
+  event_table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+  event_table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+  event_table_->setAlternatingRowColors(true);
+  events_layout->addWidget(event_table_, 1);
   tabs_->addTab(events, "Event Feed");
 
   QObject::connect(event_hardware_filter_, &QLineEdit::textChanged, this,
                    [this]() { refreshEvents(); });
   QObject::connect(event_search_, &QLineEdit::textChanged, this,
                    [this]() { refreshEvents(); });
-  QObject::connect(event_wrap_, &QCheckBox::toggled, this, [this](bool checked) {
-    event_view_->setLineWrapMode(checked ? QPlainTextEdit::WidgetWidth
-                                         : QPlainTextEdit::NoWrap);
-  });
+  QObject::connect(event_table_, &QTableWidget::itemDoubleClicked, this,
+                   [this](QTableWidgetItem *item) {
+                     auto *id_item = event_table_->item(item->row(), 0);
+                     const auto id = id_item == nullptr
+                                         ? std::string{}
+                                         : str(id_item->data(Qt::UserRole).toString());
+                     if (!id.empty()) {
+                       openDetailDialog(id);
+                     }
+                   });
 
   auto *settings_page = new QWidget(tabs_);
   auto *settings_layout = new QVBoxLayout(settings_page);
@@ -657,10 +604,8 @@ void DiagnosticsMonitorPanel::refreshOverview(
 
     widget->clear();
     const auto tree = treeForSnapshots(tab_snapshots);
-    auto *root = new QTreeWidgetItem(widget, {qstr(tree.label)});
-    setItemSeverity(root, tree.severity);
     for (const auto &[_, child] : tree.children) {
-      addTreeNode(root, child);
+      addTreeNode(widget, nullptr, child);
     }
   }
 
@@ -694,38 +639,48 @@ void DiagnosticsMonitorPanel::refreshEvents() {
     events = model_.filteredEvents(filter);
   }
 
-  QString text;
-  const auto now = std::chrono::steady_clock::now();
-  bool inserted_any = false;
+  std::vector<std::string> signatures;
+  signatures.reserve(events.size());
   for (const auto &event : events) {
-    const QString prefix =
-        padded(ageText(event.stamp, now), 12) + "  " +
-        padded(qstr(DiagnosticModel::severityLabel(event.snapshot.level)), 5) +
-        "  " + padded(qstr(event.snapshot.hardware_id.empty()
-                               ? "-"
-                               : event.snapshot.hardware_id),
-                       18) +
-        "  " + padded(qstr(event.snapshot.name), 34) + "  ";
-    QString message = qstr(event.snapshot.message);
-    message.replace('\t', "  ");
-    message.replace('\n', "\n" + QString(prefix.size(), ' '));
-    text += prefix + message;
-    const auto values = valuesText(event.snapshot.values);
-    if (!values.isEmpty()) {
-      text += "\n" + QString(prefix.size(), ' ') + values;
+    signatures.push_back(event.snapshot.id + "|" +
+                         std::to_string(static_cast<int>(event.snapshot.level)) +
+                         "|" + event.snapshot.name + "|" +
+                         event.snapshot.message);
+  }
+  if (signatures == event_row_signatures_) {
+    return;
+  }
+  event_row_signatures_ = std::move(signatures);
+
+  const int selected_row = event_table_->currentRow();
+  const QString selected_id =
+      selected_row >= 0 && event_table_->item(selected_row, 0) != nullptr
+          ? event_table_->item(selected_row, 0)->data(Qt::UserRole).toString()
+          : QString{};
+  const auto scroll_position = event_table_->verticalScrollBar()->value();
+
+  event_table_->setUpdatesEnabled(false);
+  event_table_->setRowCount(static_cast<int>(events.size()));
+  for (int row = 0; row < static_cast<int>(events.size()); ++row) {
+    const auto &event = events[row];
+    const QStringList columns = {
+        qstr(event.snapshot.name),
+        qstr(event.snapshot.message),
+    };
+    for (int col = 0; col < columns.size(); ++col) {
+      auto *item = new QTableWidgetItem(columns[col]);
+      item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+      item->setData(Qt::UserRole, qstr(event.snapshot.id));
+      event_table_->setItem(row, col, item);
     }
-    text += "\n";
-    inserted_any = true;
+    setRowSeverity(event_table_, row, event.snapshot.level);
+    if (!selected_id.isEmpty() && selected_id == qstr(event.snapshot.id)) {
+      event_table_->setCurrentCell(row, 0, QItemSelectionModel::ClearAndSelect |
+                                               QItemSelectionModel::Rows);
+    }
   }
-
-  if (!inserted_any) {
-    text = "No diagnostic events match the current filters.";
-  }
-
-  event_view_->setUpdatesEnabled(false);
-  event_view_->setPlainText(text.trimmed());
-  event_view_->moveCursor(QTextCursor::End);
-  event_view_->setUpdatesEnabled(true);
+  event_table_->verticalScrollBar()->setValue(scroll_position);
+  event_table_->setUpdatesEnabled(true);
 }
 
 void DiagnosticsMonitorPanel::refreshDetailDialogs() {
@@ -766,14 +721,17 @@ void DiagnosticsMonitorPanel::openDetailDialog(const std::string &id) {
   dialog->activateWindow();
 }
 
-void DiagnosticsMonitorPanel::addTreeNode(QTreeWidgetItem *parent,
+void DiagnosticsMonitorPanel::addTreeNode(QTreeWidget *tree, QTreeWidgetItem *parent,
                                           const TreeNode &node) {
-  auto *item = new QTreeWidgetItem(
-      parent, {qstr(node.label), qstr(node.hardware_id)});
+  auto *item = parent == nullptr
+                   ? new QTreeWidgetItem(tree,
+                                         {qstr(node.label), qstr(node.hardware_id)})
+                   : new QTreeWidgetItem(
+                         parent, {qstr(node.label), qstr(node.hardware_id)});
   item->setData(0, Qt::UserRole, qstr(node.diagnostic_id));
   setItemSeverity(item, node.severity);
   for (const auto &[_, child] : node.children) {
-    addTreeNode(item, child);
+    addTreeNode(tree, item, child);
   }
 }
 
@@ -804,6 +762,16 @@ void DiagnosticsMonitorPanel::setItemSeverity(QTreeWidgetItem *item,
   const auto color = colorFor(severity);
   for (int col = 0; col < item->columnCount(); ++col) {
     item->setForeground(col, QBrush(color));
+  }
+}
+
+void DiagnosticsMonitorPanel::setRowSeverity(QTableWidget *table, int row,
+                                             Severity severity) {
+  const auto color = colorFor(severity);
+  for (int col = 0; col < table->columnCount(); ++col) {
+    if (auto *item = table->item(row, col)) {
+      item->setForeground(QBrush(color));
+    }
   }
 }
 

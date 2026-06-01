@@ -7,6 +7,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
 #include <QPointer>
 #include <QWidget>
@@ -20,7 +21,6 @@ class QCheckBox;
 class QDialog;
 class QLabel;
 class QLineEdit;
-class QPlainTextEdit;
 class QSpinBox;
 class QTabWidget;
 class QTableWidget;
@@ -70,7 +70,7 @@ public:
   QLineEdit *overviewSearchForTest() const;
   QDialog *detailDialogForTest(const std::string &id) const;
   int detailDialogCountForTest() const;
-  QPlainTextEdit *eventFeedViewForTest() const;
+  QTableWidget *eventFeedTableForTest() const;
   std::vector<HistorySample> groupHistoryForTest(const QString &path);
 
   static QColor colorFor(Severity severity);
@@ -86,10 +86,12 @@ private:
   void refreshEvents();
   void refreshDetailDialogs();
   void openDetailDialog(const std::string &id);
-  void addTreeNode(QTreeWidgetItem *parent, const TreeNode &node);
+  void addTreeNode(QTreeWidget *tree, QTreeWidgetItem *parent,
+                   const TreeNode &node);
   void configureOverviewTree(QTreeWidget *tree);
   void connectOverviewTree(QTreeWidget *tree);
   void setItemSeverity(QTreeWidgetItem *item, Severity severity);
+  void setRowSeverity(QTableWidget *table, int row, Severity severity);
   void rebuildSubscriptionIfReady();
   TreeNode treeForSnapshots(const std::vector<DiagnosticSnapshot> &snapshots) const;
   std::map<std::string, std::set<QString>> expandedItemPaths() const;
@@ -123,10 +125,10 @@ private:
   QCheckBox *event_warn_{nullptr};
   QCheckBox *event_error_{nullptr};
   QCheckBox *event_stale_{nullptr};
-  QCheckBox *event_wrap_{nullptr};
   QLineEdit *event_hardware_filter_{nullptr};
   QLineEdit *event_search_{nullptr};
-  QPlainTextEdit *event_view_{nullptr};
+  QTableWidget *event_table_{nullptr};
+  std::vector<std::string> event_row_signatures_;
 };
 
 } // namespace rviz2_diagnostics_monitor

@@ -5,11 +5,9 @@
 #include <cstdlib>
 
 #include <QApplication>
-#include <QCheckBox>
 #include <QDialog>
 #include <QLineEdit>
 #include <QMetaObject>
-#include <QPlainTextEdit>
 #include <QScrollBar>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -69,15 +67,6 @@ int childCountWithName(const QTreeWidgetItem *parent, const QString &name) {
     }
   }
   return count;
-}
-
-QCheckBox *checkboxWithText(QWidget *widget, const QString &text) {
-  for (auto *check : widget->findChildren<QCheckBox *>()) {
-    if (check->text() == text) {
-      return check;
-    }
-  }
-  return nullptr;
 }
 
 } // namespace
@@ -148,32 +137,39 @@ TEST(PanelIntegration, ReceivesDiagnosticsAndTracksStateChanges) {
 TEST(PanelIntegration, RefreshKeepsCollapsedTreeItemsCollapsed) {
   rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
 
+  diagnostic_msgs::msg::DiagnosticArray message;
+  message.status = {
+      makeStatus("Drive/Motor/Left", "left_motor",
+                 diagnostic_msgs::msg::DiagnosticStatus::OK, "Nominal"),
+  };
+  panel.ingestForTest(message);
+
   auto *tree = panel.overviewTreeForTest();
   ASSERT_NE(tree, nullptr);
   panel.refreshForTest();
 
-  QTreeWidgetItem *all_devices = nullptr;
+  QTreeWidgetItem *drive = nullptr;
   for (int i = 0; i < tree->topLevelItemCount(); ++i) {
-    if (tree->topLevelItem(i)->text(0) == "All Devices") {
-      all_devices = tree->topLevelItem(i);
+    if (tree->topLevelItem(i)->text(0) == "Drive") {
+      drive = tree->topLevelItem(i);
       break;
     }
   }
-  ASSERT_NE(all_devices, nullptr);
-  ASSERT_TRUE(all_devices->isExpanded());
+  ASSERT_NE(drive, nullptr);
+  ASSERT_TRUE(drive->isExpanded());
 
-  all_devices->setExpanded(false);
+  drive->setExpanded(false);
   panel.refreshForTest();
 
-  QTreeWidgetItem *refreshed_all_devices = nullptr;
+  QTreeWidgetItem *refreshed_drive = nullptr;
   for (int i = 0; i < tree->topLevelItemCount(); ++i) {
-    if (tree->topLevelItem(i)->text(0) == "All Devices") {
-      refreshed_all_devices = tree->topLevelItem(i);
+    if (tree->topLevelItem(i)->text(0) == "Drive") {
+      refreshed_drive = tree->topLevelItem(i);
       break;
     }
   }
-  ASSERT_NE(refreshed_all_devices, nullptr);
-  EXPECT_FALSE(refreshed_all_devices->isExpanded());
+  ASSERT_NE(refreshed_drive, nullptr);
+  EXPECT_FALSE(refreshed_drive->isExpanded());
 }
 
 TEST(PanelIntegration, OverviewUsesInnerTabsAndCompactHeaders) {
@@ -349,9 +345,7 @@ TEST(PanelIntegration, OverviewAggregatesSameNameDiagnostics) {
 
   auto *tree = panel.overviewTreeForTest("Errors");
   ASSERT_NE(tree, nullptr);
-  auto *all_devices = topLevelItem(tree, "All Devices");
-  ASSERT_NE(all_devices, nullptr);
-  auto *drive = all_devices->child(0);
+  auto *drive = topLevelItem(tree, "Drive");
   ASSERT_NE(drive, nullptr);
   EXPECT_EQ(drive->text(0), "Drive");
   EXPECT_EQ(childCountWithName(drive, "Motor"), 1);
@@ -406,9 +400,7 @@ TEST(PanelIntegration, OverviewStaleDuplicateUsesWorstCurrentSeverity) {
 
   auto *tree = panel.overviewTreeForTest("Stale");
   ASSERT_NE(tree, nullptr);
-  auto *all_devices = topLevelItem(tree, "All Devices");
-  ASSERT_NE(all_devices, nullptr);
-  auto *drive = all_devices->child(0);
+  auto *drive = topLevelItem(tree, "Drive");
   ASSERT_NE(drive, nullptr);
   EXPECT_EQ(childCountWithName(drive, "Motor"), 1);
 
@@ -495,7 +487,7 @@ TEST(PanelIntegration, DoubleClickingDiagnosticOpensAndReusesDetailDialog) {
   dialog->close();
 }
 
-TEST(PanelIntegration, EventFeedUsesPlainTextViewWithWrapSetting) {
+TEST(PanelIntegration, EventFeedShowsNameAndMessageAndOpensDetails) {
   rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
 
   diagnostic_msgs::msg::DiagnosticArray message;
@@ -507,16 +499,27 @@ TEST(PanelIntegration, EventFeedUsesPlainTextViewWithWrapSetting) {
   panel.ingestForTest(message);
   panel.refreshForTest();
 
-  auto *event_view = panel.eventFeedViewForTest();
-  ASSERT_NE(event_view, nullptr);
-  EXPECT_NE(event_view->toPlainText().indexOf("Drive/Motor"), -1);
-  EXPECT_NE(event_view->toPlainText().indexOf("Over temperature"), -1);
-  EXPECT_EQ(event_view->lineWrapMode(), QPlainTextEdit::WidgetWidth);
+  auto *event_table = panel.eventFeedTableForTest();
+  ASSERT_NE(event_table, nullptr);
+  ASSERT_EQ(event_table->columnCount(), 2);
+  EXPECT_EQ(event_table->horizontalHeaderItem(0)->text(), "Name");
+  EXPECT_EQ(event_table->horizontalHeaderItem(1)->text(), "Message");
+  ASSERT_EQ(event_table->rowCount(), 1);
+  ASSERT_NE(event_table->item(0, 0), nullptr);
+  ASSERT_NE(event_table->item(0, 1), nullptr);
+  EXPECT_EQ(event_table->item(0, 0)->text(), "Drive/Motor");
+  EXPECT_EQ(event_table->item(0, 1)->text(), "Over temperature");
 
-  auto *wrap = checkboxWithText(&panel, "Wrap");
-  ASSERT_NE(wrap, nullptr);
-  wrap->setChecked(false);
-  EXPECT_EQ(event_view->lineWrapMode(), QPlainTextEdit::NoWrap);
+  const std::string id = "Drive/Motor\nmotor";
+  ASSERT_TRUE(QMetaObject::invokeMethod(
+      event_table, "itemDoubleClicked", Qt::DirectConnection,
+      Q_ARG(QTableWidgetItem *, event_table->item(0, 0))));
+  QApplication::processEvents();
+
+  auto *dialog = panel.detailDialogForTest(id);
+  ASSERT_NE(dialog, nullptr);
+  EXPECT_TRUE(dialog->windowTitle().contains("Drive/Motor [motor]"));
+  dialog->close();
 }
 
 int main(int argc, char **argv) {
