@@ -30,6 +30,7 @@ class QTreeWidgetItem;
 namespace rviz2_diagnostics_monitor {
 
 class DiagnosticDetailDialog;
+class DiagnosticGroupDialog;
 
 class TimelineWidget : public QWidget {
 public:
@@ -69,6 +70,7 @@ public:
   QTabWidget *overviewTabsForTest() const;
   QLineEdit *overviewSearchForTest() const;
   QDialog *detailDialogForTest(const std::string &id) const;
+  QDialog *groupDialogForTest(const QString &path) const;
   int detailDialogCountForTest() const;
   QTableWidget *eventFeedTableForTest() const;
   std::vector<HistorySample> groupHistoryForTest(const QString &path);
@@ -86,6 +88,7 @@ private:
   void refreshEvents();
   void refreshDetailDialogs();
   void openDetailDialog(const std::string &id);
+  void openGroupDialog(const QString &path);
   void addTreeNode(QTreeWidget *tree, QTreeWidgetItem *parent,
                    const TreeNode &node);
   void configureOverviewTree(QTreeWidget *tree);
@@ -110,6 +113,7 @@ private:
   mutable std::mutex mutex_;
   DiagnosticModel model_;
   std::map<std::string, QPointer<DiagnosticDetailDialog>> detail_dialogs_;
+  std::map<QString, QPointer<DiagnosticGroupDialog>> group_dialogs_;
 
   QLineEdit *topic_edit_{nullptr};
   QSpinBox *stale_timeout_spin_{nullptr};
@@ -128,6 +132,7 @@ private:
   QLineEdit *event_hardware_filter_{nullptr};
   QLineEdit *event_search_{nullptr};
   QTableWidget *event_table_{nullptr};
+  std::map<std::string, std::vector<std::string>> overview_tree_signatures_;
   std::vector<std::string> event_row_signatures_;
 };
 

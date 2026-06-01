@@ -273,6 +273,31 @@ TEST(PanelIntegration, RefreshKeepsTreeScrollPosition) {
   EXPECT_EQ(tree->verticalScrollBar()->value(), expected_scroll);
 }
 
+TEST(PanelIntegration, RefreshKeepsOverviewSelectionWhenContentIsUnchanged) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  diagnostic_msgs::msg::DiagnosticArray message;
+  message.status = {
+      makeStatus("Drive/Motor/Left", "left_motor",
+                 diagnostic_msgs::msg::DiagnosticStatus::WARN, "Warm"),
+  };
+  panel.ingestForTest(message);
+  panel.refreshForTest();
+
+  auto *tree = panel.overviewTreeForTest("All");
+  ASSERT_NE(tree, nullptr);
+  const auto left_items =
+      tree->findItems("Left", Qt::MatchExactly | Qt::MatchRecursive, 0);
+  ASSERT_EQ(left_items.size(), 1);
+  tree->setCurrentItem(left_items.front());
+  ASSERT_EQ(tree->currentItem(), left_items.front());
+
+  panel.refreshForTest();
+
+  ASSERT_NE(tree->currentItem(), nullptr);
+  EXPECT_EQ(tree->currentItem()->text(0), "Left");
+}
+
 TEST(PanelIntegration, SeverityTabsPreserveDiagnosticHierarchy) {
   rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
 
@@ -484,7 +509,8 @@ TEST(PanelIntegration, DoubleClickingDiagnosticOpensAndReusesDetailDialog) {
   QApplication::processEvents();
   EXPECT_EQ(panel.detailDialogForTest(id), dialog);
   EXPECT_EQ(panel.detailDialogCountForTest(), 1);
-  dialog->close();
+  dialog->hide();
+  QApplication::processEvents();
 }
 
 TEST(PanelIntegration, EventFeedShowsNameAndMessageAndOpensDetails) {
@@ -519,7 +545,8 @@ TEST(PanelIntegration, EventFeedShowsNameAndMessageAndOpensDetails) {
   auto *dialog = panel.detailDialogForTest(id);
   ASSERT_NE(dialog, nullptr);
   EXPECT_TRUE(dialog->windowTitle().contains("Drive/Motor [motor]"));
-  dialog->close();
+  dialog->hide();
+  QApplication::processEvents();
 }
 
 int main(int argc, char **argv) {
