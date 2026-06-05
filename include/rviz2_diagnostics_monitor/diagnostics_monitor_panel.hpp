@@ -20,6 +20,7 @@
 #include "rviz2_diagnostics_monitor/diagnostic_model.hpp"
 
 class QCheckBox;
+class QComboBox;
 class QDialog;
 class QDoubleSpinBox;
 class QLabel;
@@ -155,6 +156,10 @@ private:
   std::map<QString, QPointer<DiagnosticGroupDialog>> group_dialogs_;
 
   QLineEdit *topic_edit_{nullptr};
+  QSpinBox *qos_depth_spin_{nullptr};
+  QComboBox *qos_history_combo_{nullptr};
+  QComboBox *qos_reliability_combo_{nullptr};
+  QComboBox *qos_durability_combo_{nullptr};
   QSpinBox *stale_timeout_spin_{nullptr};
   QSpinBox *history_window_spin_{nullptr};
   QLineEdit *overview_search_{nullptr};
@@ -168,6 +173,7 @@ private:
   QCheckBox *event_error_{nullptr};
   QCheckBox *event_stale_{nullptr};
   QCheckBox *event_wrap_{nullptr};
+  QCheckBox *event_record_updates_{nullptr};
   QPushButton *event_pause_button_{nullptr};
   QLineEdit *event_search_{nullptr};
   QListWidget *event_list_{nullptr};

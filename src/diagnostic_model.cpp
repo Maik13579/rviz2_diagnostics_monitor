@@ -115,7 +115,7 @@ void DiagnosticModel::ingest(const diagnostic_msgs::msg::DiagnosticArray &messag
     entry.stale_event_emitted = snapshot.level == Severity::Stale;
     appendHistory(entry, snapshot.level, now);
     appendValueHistory(entry, snapshot, now);
-    if (changed) {
+    if (changed || config_.record_unchanged_events) {
       appendEvent(snapshot, now);
     }
   }

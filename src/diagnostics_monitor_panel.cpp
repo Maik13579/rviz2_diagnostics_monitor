@@ -16,6 +16,7 @@
 #include <QAbstractItemView>
 #include <QBrush>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialog>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -50,6 +51,7 @@ namespace rviz2_diagnostics_monitor {
 namespace {
 
 constexpr const char *kDefaultTopic = "/diagnostics";
+constexpr int kDefaultQosDepth = 10;
 constexpr int kEventSeverityRole = Qt::UserRole + 10;
 constexpr int kEventAgeRole = Qt::UserRole + 11;
 constexpr int kEventNameRole = Qt::UserRole + 12;
@@ -64,6 +66,39 @@ QString qstr(const std::string &text) {
 
 std::string str(const QString &text) {
   return text.toStdString();
+}
+
+int comboIndexForText(const QComboBox *combo, const QString &text) {
+  const int index = combo->findText(text);
+  return index < 0 ? combo->currentIndex() : index;
+}
+
+rclcpp::QoS diagnosticsQos(const QComboBox *history_combo, int depth,
+                           const QComboBox *reliability_combo,
+                           const QComboBox *durability_combo) {
+  auto qos = history_combo->currentText() == "Keep All"
+                 ? rclcpp::QoS(rclcpp::KeepAll())
+                 : rclcpp::QoS(rclcpp::KeepLast(depth));
+
+  const auto reliability = reliability_combo->currentText();
+  if (reliability == "Best Effort") {
+    qos.best_effort();
+  } else if (reliability == "System Default") {
+    qos.reliability(RMW_QOS_POLICY_RELIABILITY_SYSTEM_DEFAULT);
+  } else {
+    qos.reliable();
+  }
+
+  const auto durability = durability_combo->currentText();
+  if (durability == "Transient Local") {
+    qos.transient_local();
+  } else if (durability == "System Default") {
+    qos.durability(RMW_QOS_POLICY_DURABILITY_SYSTEM_DEFAULT);
+  } else {
+    qos.durability_volatile();
+  }
+
+  return qos;
 }
 
 QString valuesText(const std::vector<DiagnosticValue> &values) {
@@ -1010,6 +1045,21 @@ void DiagnosticsMonitorPanel::load(const rviz_common::Config &config) {
   if (config.mapGetString("Diagnostics Topic", &string_value)) {
     topic_edit_->setText(string_value);
   }
+  if (config.mapGetInt("QoS Depth", &int_value)) {
+    qos_depth_spin_->setValue(int_value);
+  }
+  if (config.mapGetString("QoS History", &string_value)) {
+    qos_history_combo_->setCurrentIndex(
+        comboIndexForText(qos_history_combo_, string_value));
+  }
+  if (config.mapGetString("QoS Reliability", &string_value)) {
+    qos_reliability_combo_->setCurrentIndex(
+        comboIndexForText(qos_reliability_combo_, string_value));
+  }
+  if (config.mapGetString("QoS Durability", &string_value)) {
+    qos_durability_combo_->setCurrentIndex(
+        comboIndexForText(qos_durability_combo_, string_value));
+  }
   if (config.mapGetInt("Stale Timeout Ms", &int_value)) {
     stale_timeout_spin_->setValue(int_value);
   }
@@ -1031,6 +1081,9 @@ void DiagnosticsMonitorPanel::load(const rviz_common::Config &config) {
   if (config.mapGetBool("Wrap Event Feed", &bool_value)) {
     event_wrap_->setChecked(bool_value);
   }
+  if (config.mapGetBool("Record Unchanged Events", &bool_value)) {
+    event_record_updates_->setChecked(bool_value);
+  }
 
   applySettingsFromControls();
   rebuildSubscriptionIfReady();
@@ -1039,6 +1092,10 @@ void DiagnosticsMonitorPanel::load(const rviz_common::Config &config) {
 void DiagnosticsMonitorPanel::save(rviz_common::Config config) const {
   rviz_common::Panel::save(config);
   config.mapSetValue("Diagnostics Topic", topic_edit_->text());
+  config.mapSetValue("QoS Depth", qos_depth_spin_->value());
+  config.mapSetValue("QoS History", qos_history_combo_->currentText());
+  config.mapSetValue("QoS Reliability", qos_reliability_combo_->currentText());
+  config.mapSetValue("QoS Durability", qos_durability_combo_->currentText());
   config.mapSetValue("Stale Timeout Ms", stale_timeout_spin_->value());
   config.mapSetValue("History Window Sec", history_window_spin_->value());
   config.mapSetValue("Show OK Events", event_ok_->isChecked());
@@ -1046,6 +1103,8 @@ void DiagnosticsMonitorPanel::save(rviz_common::Config config) const {
   config.mapSetValue("Show ERROR Events", event_error_->isChecked());
   config.mapSetValue("Show STALE Events", event_stale_->isChecked());
   config.mapSetValue("Wrap Event Feed", event_wrap_->isChecked());
+  config.mapSetValue("Record Unchanged Events",
+                     event_record_updates_->isChecked());
 }
 
 void DiagnosticsMonitorPanel::initializeForTest(
@@ -1163,6 +1222,19 @@ void DiagnosticsMonitorPanel::buildUi() {
 
   topic_edit_ = new QLineEdit(kDefaultTopic, this);
   topic_edit_->setMinimumWidth(0);
+  qos_depth_spin_ = new QSpinBox(this);
+  qos_depth_spin_->setObjectName("diagnostics_qos_depth");
+  qos_depth_spin_->setRange(1, 1000000);
+  qos_depth_spin_->setValue(kDefaultQosDepth);
+  qos_history_combo_ = new QComboBox(this);
+  qos_history_combo_->setObjectName("diagnostics_qos_history");
+  qos_history_combo_->addItems({"Keep Last", "Keep All"});
+  qos_reliability_combo_ = new QComboBox(this);
+  qos_reliability_combo_->setObjectName("diagnostics_qos_reliability");
+  qos_reliability_combo_->addItems({"Reliable", "Best Effort", "System Default"});
+  qos_durability_combo_ = new QComboBox(this);
+  qos_durability_combo_->setObjectName("diagnostics_qos_durability");
+  qos_durability_combo_->addItems({"Volatile", "Transient Local", "System Default"});
   stale_timeout_spin_ = new QSpinBox(this);
   stale_timeout_spin_->setRange(100, 600000);
   stale_timeout_spin_->setValue(3000);
@@ -1238,8 +1310,12 @@ void DiagnosticsMonitorPanel::buildUi() {
   event_wrap_ = new QCheckBox("Wrap", event_filters);
   event_wrap_->setObjectName("event_feed_wrap");
   event_wrap_->setChecked(true);
+  event_record_updates_ = new QCheckBox("All updates", event_filters);
+  event_record_updates_->setObjectName("event_feed_all_updates");
+  event_record_updates_->setChecked(true);
   event_control_layout->addWidget(event_pause_button_);
   event_control_layout->addWidget(event_wrap_);
+  event_control_layout->addWidget(event_record_updates_);
   event_control_layout->addStretch(1);
   event_filter_layout->addWidget(event_control_row);
 
@@ -1273,6 +1349,8 @@ void DiagnosticsMonitorPanel::buildUi() {
   QObject::connect(event_wrap_, &QCheckBox::toggled, this, [this]() {
     event_list_->setWordWrap(event_wrap_->isChecked());
   });
+  QObject::connect(event_record_updates_, &QCheckBox::toggled, this,
+                   [this]() { applySettingsFromControls(); });
   QObject::connect(event_pause_button_, &QPushButton::clicked, this, [this]() {
     event_feed_paused_ = !event_feed_paused_;
     event_pause_button_->setText(event_feed_paused_ ? "Continue Feed"
@@ -1310,6 +1388,14 @@ void DiagnosticsMonitorPanel::buildUi() {
   source_layout->addRow("Topic", topic_row);
   settings_layout->addWidget(source_group);
 
+  auto *qos_group = new QGroupBox("QoS", settings_page);
+  auto *qos_layout = new QFormLayout(qos_group);
+  qos_layout->addRow("History", qos_history_combo_);
+  qos_layout->addRow("Depth", qos_depth_spin_);
+  qos_layout->addRow("Reliability", qos_reliability_combo_);
+  qos_layout->addRow("Durability", qos_durability_combo_);
+  settings_layout->addWidget(qos_group);
+
   auto *history_group = new QGroupBox("Retention", settings_page);
   auto *history_layout = new QFormLayout(history_group);
   history_layout->addRow("Stale timeout", stale_timeout_spin_);
@@ -1320,6 +1406,13 @@ void DiagnosticsMonitorPanel::buildUi() {
 
   QObject::connect(apply_topic, &QPushButton::clicked, this,
                    [this]() { rebuildSubscriptionIfReady(); });
+  QObject::connect(qos_depth_spin_, qOverload<int>(&QSpinBox::valueChanged), this,
+                   [this]() { rebuildSubscriptionIfReady(); });
+  for (auto *combo :
+       {qos_history_combo_, qos_reliability_combo_, qos_durability_combo_}) {
+    QObject::connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                     [this]() { rebuildSubscriptionIfReady(); });
+  }
   for (auto *spin : {stale_timeout_spin_, history_window_spin_}) {
     QObject::connect(spin, qOverload<int>(&QSpinBox::valueChanged), this,
                      [this]() {
@@ -1333,6 +1426,7 @@ void DiagnosticsMonitorPanel::applySettingsFromControls() {
   DiagnosticModelConfig config;
   config.stale_timeout = std::chrono::milliseconds(stale_timeout_spin_->value());
   config.history_window = std::chrono::seconds(history_window_spin_->value());
+  config.record_unchanged_events = event_record_updates_->isChecked();
   std::lock_guard<std::mutex> lock(mutex_);
   model_.setConfig(config);
 }
@@ -1343,8 +1437,10 @@ void DiagnosticsMonitorPanel::subscribe() {
   }
   applySettingsFromControls();
   const auto topic = str(topic_edit_->text());
+  const auto qos = diagnosticsQos(qos_history_combo_, qos_depth_spin_->value(),
+                                  qos_reliability_combo_, qos_durability_combo_);
   subscription_ = node_->create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
-      topic, rclcpp::QoS(10),
+      topic, qos,
       [this](diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr message) {
         {
           std::lock_guard<std::mutex> lock(mutex_);

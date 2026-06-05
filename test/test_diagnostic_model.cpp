@@ -104,6 +104,9 @@ TEST(DiagnosticModel, SearchMatchesNameMessageHardwareAndValues) {
 
 TEST(DiagnosticModel, EventFeedAppendsOnlyOnStateChanges) {
   DiagnosticModel model;
+  DiagnosticModelConfig config;
+  config.record_unchanged_events = false;
+  model.setConfig(config);
   const auto now = std::chrono::steady_clock::now();
   const auto ok =
       status("Power/Battery", "battery",
@@ -183,7 +186,7 @@ TEST(DiagnosticModel, NumericValueHistoryRecordsEveryIncomingSample) {
   EXPECT_EQ(history[1].value, 80.0);
   EXPECT_EQ(history[0].raw_value, "80 %");
   EXPECT_EQ(history[1].severity, Severity::Ok);
-  EXPECT_EQ(model.events().size(), 1u);
+  EXPECT_EQ(model.events().size(), 2u);
 }
 
 TEST(DiagnosticModel, NumericValueParserAcceptsLeadingNumbersWithUnits) {

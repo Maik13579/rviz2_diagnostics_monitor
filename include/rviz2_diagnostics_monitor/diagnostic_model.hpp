@@ -76,6 +76,7 @@ struct TreeNode {
 struct DiagnosticModelConfig {
   std::chrono::milliseconds stale_timeout{3000};
   std::chrono::milliseconds history_window{std::chrono::minutes(10)};
+  bool record_unchanged_events{true};
 };
 
 struct EventFilter {

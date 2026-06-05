@@ -2,8 +2,8 @@
 
 Standalone RViz 2 panel for monitoring `diagnostic_msgs/msg/DiagnosticArray`
 streams. The panel defaults to `/diagnostics`, groups diagnostic names into
-an operator tree, keeps bounded health history, and records event-feed rows only
-when a diagnostic state changes.
+an operator tree, keeps bounded health history, and records received diagnostic
+updates in the event feed.
 
 ## Overview
 
@@ -15,8 +15,9 @@ hierarchical trees. Double-click a diagnostic leaf to open its detail popup.
 
 ## Event Feed
 
-The Event Feed tab records diagnostic state changes only. It shows a compact
+The Event Feed tab records received diagnostic updates. It shows a compact
 name/message table, can be filtered by severity, hardware ID, and free-text
-search, and opens the full diagnostic popup on row double-click.
+search, can be switched back to state-change-only recording, and opens the full
+diagnostic popup on row double-click.
 
 ![Diagnostics monitor event feed](doc/event_feed.png)

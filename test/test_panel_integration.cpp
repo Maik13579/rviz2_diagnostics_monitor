@@ -6,6 +6,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialog>
 #include <QDoubleSpinBox>
 #include <QLabel>
@@ -136,6 +137,53 @@ void addValue(diagnostic_msgs::msg::DiagnosticStatus &status,
 }
 
 } // namespace
+
+TEST(PanelIntegration, DefaultDiagnosticsSubscriptionQosIsVisibleInSettings) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+
+  auto *depth = panel.findChild<QSpinBox *>("diagnostics_qos_depth");
+  auto *history = panel.findChild<QComboBox *>("diagnostics_qos_history");
+  auto *reliability =
+      panel.findChild<QComboBox *>("diagnostics_qos_reliability");
+  auto *durability =
+      panel.findChild<QComboBox *>("diagnostics_qos_durability");
+
+  ASSERT_NE(depth, nullptr);
+  ASSERT_NE(history, nullptr);
+  ASSERT_NE(reliability, nullptr);
+  ASSERT_NE(durability, nullptr);
+  EXPECT_EQ(depth->value(), 10);
+  EXPECT_EQ(history->currentText(), "Keep Last");
+  EXPECT_EQ(reliability->currentText(), "Reliable");
+  EXPECT_EQ(durability->currentText(), "Volatile");
+}
+
+TEST(PanelIntegration, EventFeedRecordsUnchangedUpdatesByDefault) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+  const auto message =
+      makeMessage(diagnostic_msgs::msg::DiagnosticStatus::OK, "Nominal");
+
+  panel.ingestForTest(message);
+  panel.ingestForTest(message);
+
+  ASSERT_EQ(panel.eventsForTest().size(), 2u);
+  EXPECT_EQ(panel.eventsForTest()[0].snapshot.message, "Nominal");
+  EXPECT_EQ(panel.eventsForTest()[1].snapshot.message, "Nominal");
+}
+
+TEST(PanelIntegration, EventFeedCanRecordStateChangesOnly) {
+  rviz2_diagnostics_monitor::DiagnosticsMonitorPanel panel;
+  auto *all_updates = panel.findChild<QCheckBox *>("event_feed_all_updates");
+  ASSERT_NE(all_updates, nullptr);
+  all_updates->setChecked(false);
+
+  const auto message =
+      makeMessage(diagnostic_msgs::msg::DiagnosticStatus::OK, "Nominal");
+  panel.ingestForTest(message);
+  panel.ingestForTest(message);
+
+  EXPECT_EQ(panel.eventsForTest().size(), 1u);
+}
 
 TEST(PanelIntegration, ReceivesDiagnosticsAndTracksStateChanges) {
   auto panel_node =
